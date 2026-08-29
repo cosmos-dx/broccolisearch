@@ -100,16 +100,33 @@ def calibrate(sizes: Sequence[int] = (256, 1024, 4096)) -> tuple:
     """
     import time
 
+    from .calibration import TIMING_REPEATS
+
+    def per_doc(fn, n):
+        """Fastest of N runs, per document.
+
+        These used to be timed ONCE each, with no warm-up — the only calibrator
+        in the library that did. Both constants are charged against every
+        candidate a hybrid plan fuses, so a single unlucky sample moved a
+        hybrid estimate by tens of percent and showed up as irreproducible
+        cost-model error rather than as the measurement bug it was.
+        """
+        fn()                                    # warm caches and code paths
+        best = min(_time(fn) for _ in range(TIMING_REPEATS))
+        return best / n
+
+    def _time(fn):
+        started = time.perf_counter()
+        fn()
+        return (time.perf_counter() - started) * 1000.0
+
     fusion, rank = [], []
     for n in sizes:
         a = CandidateSet(source="a", scores={i: float(n - i) for i in range(n)})
         b = CandidateSet(source="b", scores={i: float(i) for i in range(n // 2, n)})
-        started = time.perf_counter()
         fused = rrf([a, b])
-        fusion.append(((time.perf_counter() - started) * 1000.0) / n)
-        started = time.perf_counter()
-        top_k(fused, 50)
-        rank.append(((time.perf_counter() - started) * 1000.0) / n)
+        fusion.append(per_doc(lambda: rrf([a, b]), n))
+        rank.append(per_doc(lambda: top_k(fused, 50), n))
     fusion.sort()
     rank.sort()
     return fusion[len(fusion) // 2], rank[len(rank) // 2]

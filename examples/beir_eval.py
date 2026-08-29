@@ -149,18 +149,45 @@ def main():
     # The thesis on real data has TWO halves, and reporting only the cost half
     # would hide a failure: the optimizer must not just be cheap, it must not
     # give up relevance to get there.
+    # The point of a relevance-aware cost model: `recall` must actually buy
+    # quality. If the curve below is flat, the optimizer is ignoring the knob.
+    coverage = "  ".join(f"{n}={v:.3f}"
+                         for n, v in sorted(idx.optimizer.solo_coverage.items()))
+    print(f"\nrecall target sweep (measured solo coverage: {coverage}):")
+    print(f"{'recall=':>10}{'nDCG@' + str(args.k):>10}{'work':>10}   plan mix")
+    for target in (0.30, 0.50, 0.70, 0.90):
+        for judgment in test:
+            judgment.query["recall"] = target
+        idx.stats.history.clear()
+        report = harness.run_strategy(f"adaptive@{target}", None)
+        mix = "  ".join(f"{n}={c}" for n, c in
+                        sorted(idx.stats.plan_counts().items()))
+        print(f"{target:>10.2f}{report.ndcg:>10.4f}{report.work:>10.0f}   {mix}")
+    for judgment in test:
+        judgment.query.pop("recall", None)
+
     fixed = [r for r in reports if not r.name.startswith("ADAPTIVE")]
     best_quality = max(fixed, key=lambda r: r.ndcg)
     for report in reports:
         if not report.name.startswith("ADAPTIVE"):
             continue
         gap = best_quality.ndcg - report.ndcg
-        verdict = (f"gives up {gap:.4f} nDCG to {best_quality.name}"
-                   if gap > 0.005 else
-                   f"matches {best_quality.name} on quality for "
-                   f"{best_quality.work / max(report.work, 1):.1f}x less work")
+        if gap > 0.005:
+            verdict = f"gives up {gap:.4f} nDCG to {best_quality.name}"
+        elif report.work < best_quality.work * 0.95:
+            verdict = (f"matches {best_quality.name} for "
+                       f"{best_quality.work / max(report.work, 1):.1f}x less work")
+        else:
+            verdict = (f"reaches {best_quality.name}'s quality, at its cost too "
+                       f"— no free lunch on this workload")
         print(f"{report.name:<22} nDCG@{args.k}={report.ndcg:.4f} "
               f"work={report.work:>6.0f}  — {verdict}")
+
+    print("\nThe optimizer's value here is landing on the right point of the "
+          "quality/cost curve\nfor the requested recall without being told "
+          "which index to use — not a free saving.\nA per-query routing WIN "
+          "needs a workload of mixed query shapes (Research.md H1);\nboth of "
+          "these datasets are homogeneous, so there is little to route.")
 
 
 if __name__ == "__main__":

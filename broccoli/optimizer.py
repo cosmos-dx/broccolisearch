@@ -287,6 +287,8 @@ class Optimizer:
         self.fusion_ms_per_doc = FUSION_MS_PER_DOC
         self.rank_ms_per_doc = RANK_MS_PER_DOC
         self.pipeline_ms = 0.0
+        self.pipeline_ms_per_hit = 0.0
+        self.solo_coverage: Dict[str, float] = {}
 
     # ----------------------------- featurize ------------------------------- #
     def featurize(self, query: Query, n_docs: int) -> QueryContext:
@@ -384,12 +386,11 @@ class Optimizer:
 
     # ------------------------------ cost model ----------------------------- #
     def estimate_plan(self, plan: Plan, ctx: QueryContext) -> PlanEstimate:
-        # Constant across candidate plans, so it never changes which plan wins;
-        # it makes the absolute number honest for `latency_budget_ms`.
         latency = self.pipeline_ms
         recalls: List[float] = []
         retrieved = 0
         n_retrieval_steps = 0
+        solo_op = ""
 
         for step in plan.steps:
             if step.op == "filter":
@@ -411,6 +412,7 @@ class Optimizer:
                 # push-down the optimizer is supposed to favour.
                 retrieved += est.cardinality
                 n_retrieval_steps += 1
+                solo_op = step.op
 
         # No retrieval stage means the filter IS the answer, and the executor
         # ranks every survivor.
@@ -418,6 +420,11 @@ class Optimizer:
         if plan.fusion != "none":
             latency += n_fuse * self.fusion_ms_per_doc
         latency += n_fuse * self.rank_ms_per_doc
+        # Marshalling into `Hit` objects is O(results returned), and a query
+        # asking for k=200 against a term matching 50 documents returns 50.
+        # Charging for k regardless made small-result queries the largest
+        # remaining error in the model.
+        latency += min(ctx.query.k, n_fuse) * self.pipeline_ms_per_hit
 
         if not recalls:
             recall = 1.0 if plan.name == "filter_only" else 0.0
@@ -431,6 +438,16 @@ class Optimizer:
             for r in recalls:
                 missed *= (1.0 - r)
             recall = min(0.99, 1.0 - missed)
+
+        # Fidelity is not relevance. Everything above measures how faithfully
+        # each operator computed ITS OWN similarity function, which an exact
+        # scan satisfies perfectly while still missing documents only the other
+        # index can see. `solo_coverage[op]` is the measured fraction of a fused
+        # answer that this index recovers alone (Index._measure_index_agreement),
+        # so consulting a second index can finally out-score a perfect scan of
+        # one. Multi-index plans produce the fused answer by definition.
+        if n_retrieval_steps == 1 and self.solo_coverage:
+            recall *= self.solo_coverage.get(solo_op, 1.0)
 
         return PlanEstimate(latency_ms=latency, recall=recall)
 

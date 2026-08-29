@@ -146,14 +146,19 @@ class LexicalIndex(BaseIndex):
             selectivity = len(budget.domain) / max(self.n_docs, 1)
             cardinality = int(cardinality * selectivity)
         latency_ms = self.base_ms + work * self.sec_per_posting * 1000.0
-        # Heuristic recall: you cannot return k relevant docs if the posting
-        # union holds fewer than k docs at all. Compare against the caller's k,
-        # NOT the overfetch budget — a term matching exactly the k documents the
-        # user wants has full coverage, not 1/overfetch of it. The remaining cap
-        # is vocabulary mismatch: a lexical index cannot match a synonym it
-        # never saw.
-        coverage = min(1.0, cardinality / max(budget.k, 1))
-        recall = 0.92 * coverage
+        # Fidelity: you cannot return k relevant docs if the posting union holds
+        # fewer than k docs at all. Compare against the caller's k, NOT the
+        # overfetch budget — a term matching exactly the k documents the user
+        # wants has full coverage, not 1/overfetch of it.
+        #
+        # This used to carry a hardcoded 0.92 for "vocabulary mismatch: a
+        # lexical index cannot match a synonym it never saw". That was the right
+        # idea guessed at, and it belonged to neither this index nor this
+        # scale — the vector index needed the same discount and had none, which
+        # is why an exact scan could claim a perfect score. It is now measured
+        # once per corpus as `Optimizer.solo_coverage` and applied to whichever
+        # index is being used alone.
+        recall = min(1.0, cardinality / max(budget.k, 1))
         return CostEstimate(latency_ms=latency_ms, recall=recall,
                             cardinality=int(cardinality))
 

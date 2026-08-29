@@ -12,10 +12,11 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Union
+from typing import (Any, Callable, Dict, Iterable, List, Optional, Sequence,
+                    Tuple, Union)
 
 from . import ranking
-from .calibration import TIMING_REPEATS
+from .calibration import TIMING_REPEATS, fit_linear
 from .execution import Executor
 from .indexes import LexicalIndex, StructuredIndex, VectorIndex
 from .optimizer import Optimizer, Policy, RuleBasedPolicy
@@ -23,6 +24,7 @@ from .query import (Eq, Explain, Hit, OneOf, Predicate, Query, Range, Results,
                     normalize_where, parse_duration)
 from .schema import STRUCTURED_KINDS, Schema, to_timestamp
 from .stats import StatisticsStore
+from .types import Budget
 
 Embedder = Callable[[str], Sequence[float]]
 
@@ -202,39 +204,133 @@ class Index:
         (self.optimizer.fusion_ms_per_doc,
          self.optimizer.rank_ms_per_doc) = ranking.calibrate()
         self._calibrated = True
-        self.optimizer.pipeline_ms = self._measure_pipeline_overhead()
+        (self.optimizer.pipeline_ms,
+         self.optimizer.pipeline_ms_per_hit) = self._measure_pipeline_overhead()
+        self.optimizer.solo_coverage = self._measure_index_agreement()
 
-    def _measure_pipeline_overhead(self) -> float:
-        """Fixed per-query cost outside the indexes: planning, query resolution
-        and building `Results`.
+    def _measure_index_agreement(self, sample: int = 24,
+                                 k: int = 10) -> Dict[str, float]:
+        """Per index: how much of the FUSED answer that index alone recovers.
 
-        This is deliberately a constant measured ONCE, not a value learned from
-        live traffic. An earlier version updated it per query from observed
-        latency, which coupled queries together — one slow query silently
-        re-priced the next one's plan. A constant is identical across candidate
-        plans, so it cannot distort plan CHOICE; it exists so that
-        `latency_budget_ms` is compared against an honest number.
+        Each index's `recall` answers "did this operator compute its own
+        similarity function faithfully" — an exact vector scan scores 1.0 there
+        by definition. That is a different question from "did it find what the
+        user wanted", and conflating them made fusion unpickable: nothing can
+        beat 1.0, so the planner could never justify consulting a second index
+        even on corpora where doing so measurably wins (README, BEIR results).
+
+        The question asked here is the one the planner actually faces: *if I
+        skip the second index, how much of the fused result do I lose?* We
+        answer it by running the fusion on sample queries and measuring what
+        fraction of its top-k each index alone would still have returned.
+
+        An earlier version scored raw disagreement between the two indexes
+        (Jaccard) instead. That conflates two opposite situations: the indexes
+        can disagree because they are complementary, or because one of them is
+        simply wrong. On a corpus where the vector index alone is already
+        perfect, a weak lexical index dragged the estimate down and the planner
+        started fusing everything — the demo's self-check caught it. Comparing
+        against the fused result cannot make that mistake, because an index
+        that contributes nothing useful also contributes nothing to the fusion.
+
+        ponytail: one constant per index, not per query. Ceiling: a query whose
+        terms are all out-of-vocabulary has worse lexical coverage than the
+        corpus mean claims. Upgrade path: condition on query features, which is
+        what `LearnedPolicy` does when judgments are available.
         """
-        term = next(iter(self.lexical.postings), None) if self.lexical else None
-        if term is None:
-            return 0.0
-        samples = []
+        default = {"lexical": 1.0, "vector": 1.0}
+        if not (self.lexical and self.vector) or len(self) < 2 * k:
+            return default
+        vector_field = self.schema.vector_field()
+        text_fields = self.schema.text_fields
+        if not vector_field or not text_fields:
+            return default
+
+        live = [i for i in self._docs if i not in self._deleted]
+        step = max(1, len(live) // sample)
+        budget = Budget(candidates=k * OVERFETCH, ef=64, k=k)
+        recovered = {"lexical": [], "vector": []}
+        for internal in live[::step][:sample]:
+            doc = self._docs[internal]
+            if vector_field not in doc:
+                continue
+            terms = self.lexical.analyze_query(
+                " ".join(str(doc[f]) for f in text_fields if f in doc))
+            if not terms:
+                continue
+            lexical_hits = self.lexical.search(terms, budget)
+            vector_hits = self.vector.search(doc[vector_field], budget)
+            fused = {d for d, _ in ranking.top_k(
+                ranking.rrf([lexical_hits, vector_hits]), k)}
+            # The probe document is its own best match everywhere, so counting
+            # it would report agreement that no real query enjoys.
+            fused.discard(internal)
+            if not fused:
+                continue
+            for name, hits in (("lexical", lexical_hits), ("vector", vector_hits)):
+                alone = {d for d, _ in ranking.top_k(hits.scores, k)}
+                alone.discard(internal)
+                recovered[name].append(len(alone & fused) / len(fused))
+        return {name: (sum(v) / len(v) if v else 1.0)
+                for name, v in recovered.items()}
+
+    def _measure_pipeline_overhead(self) -> Tuple[float, float]:
+        """Per-query cost outside the indexes: planning, query resolution and
+        building `Results`. Returns (fixed ms, ms per returned hit).
+
+        Deliberately measured ONCE, not learned from live traffic. An earlier
+        version updated it per query from observed latency, which coupled
+        queries together — one slow query silently re-priced the next one's
+        plan. Constants are identical across candidate plans for a given query,
+        so they cannot distort plan CHOICE; they exist so that
+        `latency_budget_ms` is compared against an honest number.
+
+        It is a LINE in k, not a constant, because marshalling results into
+        `Hit` objects is O(k). Calibrating at a single k and applying it to
+        every k under-charged the fixed cost of a k=50 query by ~35%, which was
+        the single largest remaining source of cost-model error on small
+        queries — there the pipeline IS most of the latency. This is the same
+        k-dependence already priced inside the vector index; the pipeline had
+        it too and was not modelled.
+        """
+        if not (self.lexical and self.lexical.postings):
+            return 0.0, 0.0
+        # The most common term, so the probe can actually RETURN every k below.
+        # With an arbitrary term the ladder ran past the number of matching
+        # documents, the curve flattened where it should have kept rising, and
+        # the fit flipped between "high fixed cost, no per-hit cost" and the
+        # reverse depending on noise — a 2.6x swing in a constant that dominates
+        # small queries.
+        term = max(self.lexical.postings, key=self.lexical.df)
+        ladder = [k for k in (5, 20, 50, 100) if k <= self.lexical.df(term)]
+        if len(ladder) < 2:
+            ladder = [1, max(2, self.lexical.df(term))]
+        points = []
         history = self.stats.history
         try:
             # These are synthetic probes, not user traffic. Leaving them in the
             # history would poison the training signal a LearnedPolicy reads.
             self.stats.history = []
-            for _ in range(3):  # warm caches before the first timed sample
-                self.search(text=term, k=10, explain=True)
-            for _ in range(TIMING_REPEATS):
-                ex = self.search(text=term, k=10, explain=True).explain
-                samples.append(max(ex.actual_latency_ms - ex.execution_ms, 0.0))
+            for k in ladder:
+                for _ in range(3):  # warm caches before the first timed sample
+                    self.search(text=term, k=k, explain=True)
+                totals, executions = [], []
+                for _ in range(TIMING_REPEATS * 3):
+                    ex = self.search(text=term, k=k, explain=True).explain
+                    totals.append(ex.actual_latency_ms)
+                    executions.append(ex.execution_ms)
+                # Minimise each quantity separately, then subtract. Taking
+                # min(total - execution) per run subtracts two nearly-equal
+                # noisy timers and keeps whichever run had the unluckiest pair,
+                # which made this constant swing 2x between calibrations of an
+                # identical corpus — the single largest source of cost-model
+                # error. Each minimum is individually stable, and total >=
+                # execution holds per run, so the difference stays >= 0.
+                points.append((float(k), min(totals) - min(executions)))
         finally:
             self.stats.history = history
-        # min, like every other calibration: this constant is the largest term
-        # in a sub-0.1ms query's estimate, so its own run-to-run noise became
-        # the dominant source of cost-model error once the operators were fixed.
-        return min(samples)
+        base_ms, ms_per_hit = fit_linear(points)   # unit-agnostic: ms in, ms out
+        return max(base_ms, 0.0), max(ms_per_hit, 0.0)
 
     def _filter_calibration_samples(self) -> List[Dict[str, Predicate]]:
         """Build filters whose result sizes SPAN a wide range.

@@ -17,7 +17,7 @@ import pytest
 import broccoli
 from broccoli.indexes.lexical import analyze
 from broccoli.optimizer import QueryContext, RuleBasedPolicy
-from broccoli.query import Eq, Plan, PlanEstimate, Query
+from broccoli.query import Eq, Plan, PlanEstimate, PlanStep, Query
 from broccoli.types import Budget, CandidateSet
 
 DIM = 16
@@ -457,6 +457,56 @@ def test_policy_falls_back_to_best_recall_when_target_unreachable():
     ctx = QueryContext(query=Query(recall_target=0.99))
     plans = [_plan("a", 5.0, 0.50), _plan("b", 50.0, 0.80)]
     assert policy.choose(plans, ctx).name == "b"
+
+
+def test_a_perfect_single_index_scan_no_longer_outranks_fusion(index, corpus):
+    """The defect BEIR exposed: fidelity 1.0 made fusion unreachable.
+
+    An exact vector scan legitimately reports recall 1.0 for its OWN function,
+    so before `solo_coverage` existed no plan could ever out-score it and the
+    optimizer could not be made to fuse at any recall target.
+    """
+    centroids, _ = corpus
+    opt = index.optimizer
+    query = Query(text="concept1", semantic=list(centroids[1]), k=10)
+    ctx = opt.featurize(query, len(index))
+    budget = Budget(candidates=50, ef=64, k=10)
+    solo = _plan("vector", 1.0, 1.0)
+    fused = _plan("hybrid_rrf", 5.0, 1.0)
+    # Two retrieval steps is what marks a plan as reaching the union.
+    solo.steps = [PlanStep("vector", budget)]
+    fused.steps = [PlanStep("lexical", budget), PlanStep("vector", budget)]
+
+    previous = opt.solo_coverage
+    try:
+        opt.solo_coverage = {"vector": 0.6, "lexical": 0.6}
+        assert (opt.estimate_plan(solo, ctx).recall
+                < opt.estimate_plan(fused, ctx).recall)
+        opt.solo_coverage = {"vector": 1.0, "lexical": 1.0}
+        assert (opt.estimate_plan(solo, ctx).recall
+                >= opt.estimate_plan(fused, ctx).recall - 1e-9)
+    finally:
+        opt.solo_coverage = previous
+
+
+def test_measured_agreement_is_a_coverage_fraction(index):
+    """A fraction of the fused answer, so every index lands in [0, 1]."""
+    coverage = index._measure_index_agreement()
+    assert set(coverage) == {"lexical", "vector"}
+    for value in coverage.values():
+        assert 0.0 <= value <= 1.0
+
+
+def test_recall_target_actually_changes_the_chosen_plan(index, corpus):
+    """If the knob is inert the cost model is ignoring relevance again."""
+    centroids, _ = corpus
+    index.optimizer.solo_coverage = {"vector": 0.6, "lexical": 0.6}
+    cheap = index.search(text="concept1", semantic=list(centroids[1]), k=5,
+                         recall=0.5, explain=True)
+    thorough = index.search(text="concept1", semantic=list(centroids[1]), k=5,
+                            recall=0.95, explain=True)
+    assert cheap.plan.name != thorough.plan.name
+    assert thorough.plan.name == "hybrid_rrf"
 
 
 # --------------------------- learned policy -------------------------------- #
