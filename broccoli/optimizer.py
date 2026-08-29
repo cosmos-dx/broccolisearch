@@ -89,6 +89,149 @@ class RuleBasedPolicy(Policy):
                                               -p.estimate.latency_ms))
 
 
+class LearnedPolicy(Policy):
+    """Ranks plans by MEASURED relevance coverage instead of operator fidelity.
+
+    `RuleBasedPolicy` ranks by `estimate.recall`, which each index computes
+    about *itself*: "did I return the true nearest neighbours / all the
+    postings". An exact vector scan reports 1.0 there, so no plan can outrank
+    it — even on corpora where fusing with BM25 demonstrably retrieves more
+    relevant documents (measured on BEIR; see README and Research.md §7.3).
+
+    Fidelity is not relevance, and crucially no index can report relevance
+    about itself: fusion's gain comes from two indexes DISAGREEING about which
+    documents matter, which neither can observe alone. So this policy stops
+    deriving it and measures it — `fit` runs each plan shape over judged
+    queries and records the relevance recall@k it actually achieved, bucketed
+    by a query feature so the answer can differ per query rather than
+    collapsing to "always fuse".
+
+    ponytail: a bucketed mean over one feature is the smallest model that can
+    represent "fusion helps here, not there". Ceiling: it conditions on the
+    rarest query term alone and needs judgments to train. Upgrade path: a tree
+    over the whole `QueryContext.features` dict, trained on click feedback
+    arriving through `observe` so no judgments are required.
+    """
+
+    name = "learned"
+
+    DF_EDGES = (1, 8, 64)
+
+    def __init__(self, fallback: Optional[Policy] = None, min_samples: int = 5,
+                 tolerance: float = 0.01):
+        # bucket -> plan name -> mean quality achieved on the training queries
+        self.coverage: Dict[str, Dict[str, float]] = {}
+        self.support: Dict[str, int] = {}      # bucket -> training queries
+        self.fallback = fallback or RuleBasedPolicy()
+        self.min_samples = min_samples
+        # How much quality a plan may give up to be preferred for being cheaper.
+        # Without this the policy just maximises quality and always fuses, which
+        # is a fixed strategy wearing a learned hat.
+        self.tolerance = tolerance
+
+    @classmethod
+    def bucket(cls, features: Dict[str, Any]) -> str:
+        """Log-bucketed document frequency of the rarest query term.
+
+        The cheapest available proxy for "can the lexical index answer this on
+        its own": a term in a handful of documents is a precise selector, one
+        in half the corpus is not, and a term the corpus has never seen (df 0)
+        means lexical contributes nothing and only the vector side can help.
+        """
+        if not features.get("has_text"):
+            return "no_text"
+        df = features.get("min_df") or 0
+        for edge in cls.DF_EDGES:
+            if df < edge:
+                return f"min_df<{edge}"
+        return f"min_df>={cls.DF_EDGES[-1]}"
+
+    def fit(self, index, judgments, k: int = 10,
+            strategies: Sequence[str] = ("lexical", "vector", "hybrid_rrf"),
+            metric: Optional[Any] = None) -> "LearnedPolicy":
+        """Measure each plan shape's achieved quality on judged queries.
+
+        Defaults to nDCG@k, not recall@k, because they disagree and nDCG is
+        what gets reported: on BEIR SciFact the vector plan has clearly worse
+        recall than fusion yet nearly the same nDCG, because it ranks the hits
+        it does find better. Training on recall therefore buys fusion's extra
+        hits at 5x the work for no measurable gain in the metric anyone reads.
+
+        Train on a DISJOINT set from whatever you evaluate on — a bucketed mean
+        will happily memorise the queries it was fitted to.
+        """
+        from .eval import ndcg_at_k         # local: eval imports nothing from here
+        score = metric or (lambda ids, j: ndcg_at_k(ids, j.relevant, k))
+
+        totals: Dict[str, Dict[str, List[float]]] = {}
+        # Probe queries are calibration traffic, not user traffic; letting them
+        # into the history would bias every statistic read off it later.
+        history = list(index.stats.history)
+        try:
+            for judgment in judgments:
+                relevant = judgment.relevant_set
+                if not relevant:
+                    continue
+                for strategy in strategies:
+                    kwargs = dict(judgment.query)
+                    kwargs["k"] = k
+                    kwargs["pin"] = strategy
+                    try:
+                        results = index.search(**kwargs)
+                    except ValueError:
+                        continue          # strategy inapplicable to this query
+                    # Read features off the history entry the search just wrote,
+                    # so training buckets come from the same featurize() the
+                    # optimizer will call at query time.
+                    bucket = self.bucket(index.stats.history[-1].features)
+                    slot = totals.setdefault(bucket, {}).setdefault(strategy, [])
+                    slot.append(score(results.ids, judgment))
+        finally:
+            index.stats.history = history
+
+        self.coverage = {
+            bucket: {name: sum(scores) / len(scores)
+                     for name, scores in plans.items()
+                     if len(scores) >= self.min_samples}
+            for bucket, plans in totals.items()
+        }
+        self.coverage = {b: p for b, p in self.coverage.items() if p}
+        self.support = {b: max((len(s) for s in plans.values()), default=0)
+                        for b, plans in totals.items()}
+        return self
+
+    def choose(self, candidates: Sequence[Plan], ctx: QueryContext) -> Plan:
+        if not candidates:
+            raise ValueError("no executable plan for this query")
+        learned = self.coverage.get(self.bucket(ctx.features), {})
+        known = [p for p in candidates if p.name in learned]
+        if not known:
+            # Unseen bucket or untrained policy: the rules are a worse objective,
+            # not a broken one, and guessing from no evidence would be worse still.
+            return self.fallback.choose(candidates, ctx)
+
+        # Cheapest plan that is not measurably worse than the best one. Picking
+        # the argmax instead would always fuse: fusion nearly always wins by a
+        # hair, and paying 5x the work for a hair is the failure this policy is
+        # supposed to fix, not a different flavour of it.
+        best = max(learned[p.name] for p in known)
+        good_enough = [p for p in known
+                       if learned[p.name] >= best - self.tolerance]
+        return min(good_enough, key=lambda p: p.estimate.latency_ms)
+
+    def describe(self) -> str:
+        if not self.coverage:
+            return "learned policy: untrained"
+        lines = ["learned policy: measured quality by query bucket"]
+        for bucket in sorted(self.coverage):
+            plans = self.coverage[bucket]
+            best = max(plans, key=plans.get)
+            body = "  ".join(f"{n}={v:.3f}" for n, v in sorted(plans.items()))
+            lines.append(f"  {bucket:<14} n={self.support.get(bucket, 0):<4} "
+                         f"{body}   -> prefers {best}")
+        return "\n".join(lines)
+
+
 # ------------------------------- optimizer --------------------------------- #
 
 

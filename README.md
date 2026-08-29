@@ -74,7 +74,7 @@ The optimizer matches the best fixed strategy's recall using **1.17× less work*
 - The win here is **1.17×, not dramatic**. Filter push-down happens during planning and therefore benefits *every* strategy including the fixed ones, so this workload understates what the optimizer would save in a system where fixed strategies don't get that for free.
 - **Work units, not wall-clock, are the trustworthy metric.** At this scale in Python, latency swings ~15% with run *order* alone (cold caches) — larger than the gap between plans. The latency columns are indicative only.
 - The cost model's estimate error is **~10–15% median** (`examples/cost_model_error.py`), down from ~85%, and what remains is concentrated in sub-0.1ms queries where the fixed per-query cost is most of the total. It is calibrated for **ranking plans correctly**, which the tests assert, not for predicting absolute latency.
-- The workload is synthetic. Running this on judged data (BEIR / MS MARCO) is the next real step.
+- This particular workload is synthetic. See below for what happened on real judged data — it is not the same story.
 
 ### Fixing the cost model was also a speedup
 
@@ -97,6 +97,43 @@ The earlier standalone simulation (`experiments/thesis_prototype.py`, no depende
 
 ---
 
+## On real judged data (BEIR)
+
+Synthetic ground truth can only prove the system is self-consistent, so the same harness was run against BEIR — real corpora, real queries, human relevance judgments, `all-MiniLM-L6-v2` embeddings — using `examples/beir_eval.py`.
+
+**The retrieval engines are correct.** Our BM25 lands on the published BEIR baseline almost exactly, which is the check that would have caught an analyzer or scoring bug:
+
+| Dataset | our BM25 nDCG@10 | published BEIR BM25 |
+|---|---|---|
+| SciFact (5,183 docs / 300 queries) | **0.664** | 0.665 |
+| NFCorpus (3,633 docs / 323 queries) | **0.318** | 0.325 |
+
+**The optimizer's objective is wrong, and real data is what exposed it.** On both datasets it picks a cheap plan and leaves relevance on the table:
+
+```
+scifact                 nDCG@10     work        nfcorpus            nDCG@10     work
+ADAPTIVE (optimizer)      0.647      843        ADAPTIVE              0.319      619
+lexical                   0.664     3599        lexical               0.318      600
+vector                    0.644      850        vector                0.314      850
+hybrid_rrf                0.693     4435        hybrid_rrf            0.346     1439
+```
+
+`hybrid_rrf` is the best strategy on both (+0.046 and +0.027 nDCG) and the optimizer **never chooses it**. This is not a tuning problem, it is a definitional one:
+
+> The cost model's `recall` means **operator fidelity** — did the ANN return the true nearest neighbours — not **relevance**. An exact vector scan honestly reports recall 1.0, so no plan can ever outrank it, even though fusing with BM25 retrieves *different* relevant documents that vector search alone never sees.
+
+The synthetic workload hid this because its relevant documents were constructed so that a single index could find all of them; union recall and relevance coincided. On real data they come apart. Estimating what fusion adds requires knowing which index's notion of similarity matches *this* corpus's judgments — which is not derivable from index statistics and is exactly the job of the unbuilt `LearnedPolicy` ([Research.md](./Research.md) §7, open problem 3).
+
+Reproduce it:
+
+```bash
+curl -sLO https://public.ukp.informatik.tu-darmstadt.de/thakur/BEIR/datasets/scifact.zip && unzip -q scifact.zip
+pip install sentence-transformers          # only needed for this script
+PYTHONPATH=. python3 examples/beir_eval.py --data ./scifact
+```
+
+---
+
 ## What's implemented
 
 | Area | Status |
@@ -113,7 +150,9 @@ The earlier standalone simulation (`experiments/thesis_prototype.py`, no depende
 | Calibration of every index against the real machine | done |
 | Query history logging (the training signal for a learned policy) | done |
 | Evaluation harness: recall@k, nDCG, MRR, work/latency-at-fixed-recall | done |
+| BEIR runner on real judged data (`examples/beir_eval.py`) | done |
 | Persistence: save/open | done |
+| Relevance-aware cost model (vs. today's operator-fidelity recall) | **not built — known defect, see BEIR results above** |
 | Learned policy, graph/temporal axes, distribution, Rust core | designed, not built |
 
 62 tests: `python3 -m pytest tests/ -q`
@@ -158,8 +197,9 @@ Start with **[document.md](./document.md)** (master index + glossary).
 
 ## Next steps
 
-- [ ] Run the harness on judged data (BEIR / MS MARCO) instead of synthetic ground truth.
-- [ ] `LearnedPolicy` trained on the query history already being logged.
+- [x] Run the harness on judged data (BEIR) instead of synthetic ground truth — done, and it found a real defect in the optimizer's objective (above).
+- [ ] **Teach the cost model that relevance ≠ operator fidelity.** This is now the top priority, because it is the one thing standing between the optimizer and the best strategy on every real dataset tested.
+- [ ] `LearnedPolicy` trained on the query history already being logged — the BEIR result gives it a concrete job: learn per-index relevance coverage from judgments so fusion can be priced.
 - [ ] Port the engines to Rust behind the same interfaces (Tantivy / usearch / roaring).
 
 ## License

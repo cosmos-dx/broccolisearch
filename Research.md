@@ -68,6 +68,8 @@ where \(\widehat{L}\) composes operator latencies and \(\widehat{R}\) composes s
 ## 4. Hypotheses
 
 - **H1:** A per-query optimizer strictly dominates the best fixed strategy on **latency-at-fixed-recall** when the workload contains a mix of query types (keyword-heavy, semantic, filtered).
+
+  > **Status: holds on synthetic workloads, FALSIFIED as stated on real ones.** On BEIR SciFact and NFCorpus (`examples/beir_eval.py`) the optimizer is cost-competitive but *quality-dominated*: `hybrid_rrf` scores +0.046 and +0.027 nDCG@10 respectively and the optimizer never selects it. The defect is in the hypothesis's own terms — "fixed recall" was operationalized as **operator fidelity** (did the ANN find the true nearest neighbours), and an exact vector scan satisfies that at 1.0, so no plan can outrank it. Relevance recall is a different quantity, and H1 is only meaningful against the latter. See §7.3.
 - **H2:** The largest single win comes from **cardinality-driven filter push-down** enabling cheaper approximate search over survivors (RQ3).
 - **H3:** Offline-calibrated recall/latency curves are **accurate enough** for the optimizer to hit recall targets within a small tolerance (RQ1).
 - **H4:** A learned policy improves over rules **primarily on tail/ambiguous query classes**, not on clear-cut ones (RQ4).
@@ -124,6 +126,10 @@ The dual nature is a feature: the evaluation harness that validates the paper is
 1. **Unified cost across deterministic + approximate operators** is genuinely unsolved; a scalar cost is wrong, so we carry (latency, recall) — but composing recall across stages (especially fusion) is an approximation whose error we must bound.
 2. **Cardinality estimation for the approximate side.** Posting lists give good lexical estimates; ANN "how many good neighbors exist" is fuzzier.
 3. **Fusion recall composition.** Estimating the recall of an RRF/weighted fusion of two imperfect candidate sets, cheaply, before running it.
+
+   > **Now the blocking problem, with evidence.** Measured on BEIR (see H1): fusion is the best strategy on every real dataset tested and the optimizer never picks it. The union model `1 - Π(1 - rᵢ)` is not wrong arithmetically — it is being fed the wrong `rᵢ`. Each index reports how faithfully it computed *its own* similarity function, which says nothing about whether that function's notion of similarity matches the corpus's judgments. Lexical and vector retrieve *different* relevant documents, so fusion's gain comes from their **disagreement**, a quantity no single index can report about itself.
+   >
+   > What would fix it: a per-index, per-query-class estimate of *relevance* coverage, learned from judgments or from click/engagement feedback. This is derivable only from labels, not from index statistics — which is precisely why the `Policy` interface exists and why a `LearnedPolicy` is the next build rather than a nice-to-have.
 4. **Learned policy cold-start & drift.** How little history is enough; how to detect workload drift and recalibrate curves.
 5. **Cost of planning itself.** The optimizer must be *much* cheaper than the query it plans; plan enumeration is bounded, but this bound is a research/engineering knob. *Observed:* on the reference implementation this inverted — planning cost **27× the execution** it was planning for a hybrid query — because estimation called an accidentally O(corpus) property. It is now ~2–4× cheaper than execution on sub-millisecond queries. The threat is real and needs a standing measurement, not a one-off fix.
 6. **Transfer.** Do calibrated curves / learned policies survive a dataset or embedding-model swap (RQ5)?

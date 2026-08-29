@@ -66,12 +66,15 @@ BroccoliSearch is that missing layer. The individual index engines are treated a
 
 Reading order for a newcomer: **document → Information → PRD → Architecture → SystemDesign → Approach → Research → SHAPE**.
 
-Two programs turn the claims above into numbers, and either can contradict the docs:
+Three programs turn the claims above into numbers, and any of them can contradict the docs — the third already does:
 
 | Run | Answers |
 |---|---|
 | `python3 examples/demo.py` | Does the optimizer actually beat every fixed strategy on work-at-fixed-recall? |
 | `python3 examples/cost_model_error.py` | How wrong are the cost estimates, per query shape and per chosen plan? |
+| `python3 examples/beir_eval.py --data ./scifact` | On **real judged data**, is the quality competitive with published baselines? |
+
+The BEIR run is the one that matters most, because synthetic ground truth can only show the system agrees with itself. It confirmed the retrieval engines are correct (our BM25 scores 0.664 nDCG@10 on SciFact against a published 0.665) and simultaneously **falsified the optimizer's objective**: it optimizes for operator fidelity, not relevance, so it never selects the fusion plan that wins on every real dataset tested. See [Research.md](./Research.md) §4 (H1) and §7.3.
 
 ---
 
@@ -106,6 +109,8 @@ Terms below are used identically across all documents.
 **In scope (v1 core):** single-node engine; lexical + vector + bitmap indexes; candidate→rank pipeline; rule-based cost-based optimizer; RRF hybrid fusion; Rust core with Python bindings; measurement harness on a labeled dataset.
 
 **Explicitly deferred (fully designed, not built first):** distributed/sharded execution, graph & temporal index axes, the *learned* adaptive planner, multi-tenancy, and a hosted service. These are described in full in the design docs so the architecture accommodates them — but they are not the thing that proves the thesis.
+
+> The BEIR results promoted one of these from "deferred" to "blocking". The learned planner was deferred on the assumption that rules were good enough and learning was an optimization; real judged data showed the rules optimize the wrong objective and that the correction requires labels. It is now the next build, not a later one.
 
 See **[SHAPE.md](./SHAPE.md)** for the hard no-gos and rabbit holes.
 
