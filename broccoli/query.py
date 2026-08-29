@@ -200,7 +200,8 @@ class Explain:
 
     plan: Plan
     stages: List[StageStat] = field(default_factory=list)
-    actual_latency_ms: float = 0.0
+    actual_latency_ms: float = 0.0   # end to end, what the caller waited for
+    execution_ms: float = 0.0        # the plan only, excluding planning/marshalling
     considered: List[str] = field(default_factory=list)
 
     @property
@@ -212,7 +213,8 @@ class Explain:
         lines = [self.plan.describe(),
                  f"  estimated: {self.plan.estimate.latency_ms:.2f}ms "
                  f"recall~{self.plan.estimate.recall:.2f}",
-                 f"  actual:    {self.actual_latency_ms:.2f}ms"]
+                 f"  actual:    {self.actual_latency_ms:.2f}ms "
+                 f"({self.execution_ms:.2f}ms executing)"]
         for s in self.stages:
             lines.append(f"  - {s.op:<8} in={s.candidates_in:<6} out={s.candidates_out:<6}"
                          f" examined={s.examined:<7} {s.latency_ms:.2f}ms")

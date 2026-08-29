@@ -282,14 +282,21 @@ class VectorIndex(BaseIndex):
         k = min(k, rows.size)
         top = np.argpartition(-sims, k - 1)[:k] if k < rows.size else np.arange(rows.size)
         top = top[np.argsort(-sims[top])]
-        scores = {self._ids[int(rows[i])]: float(sims[i]) for i in top}
+        # Convert both sides to Python lists in one C call each: indexing numpy
+        # scalar-by-scalar inside a dict comprehension costs more than the scan.
+        ids = self._ids
+        scores = dict(zip([ids[r] for r in rows[top].tolist()],
+                          sims[top].tolist()))
         return scores, int(rows.size)
 
     def _search_ann(self, query: np.ndarray, budget: Budget, k: int):
         self._ann.set_ef(max(budget.ef, k))
         allowed_rows = None
         if budget.domain is not None or self.deleted:
-            allowed_rows = set(int(r) for r in self._rows_for(budget))
+            # .tolist() converts in C and yields real Python ints, which is
+            # what the predicate compares against; a genexp with int() per row
+            # does the same work one interpreter step at a time.
+            allowed_rows = set(self._rows_for(budget).tolist())
             if not allowed_rows:
                 return {}, 0
             predicate = lambda row: row in allowed_rows  # noqa: E731
@@ -301,9 +308,9 @@ class VectorIndex(BaseIndex):
         except RuntimeError:
             # hnswlib raises when it cannot find k elements under the filter.
             return self._search_exact(query, budget, k)
-        scores = {}
-        for row, dist in zip(labels[0], distances[0]):
-            scores[self._ids[int(row)]] = self._score_from_distance(self.metric, dist)
+        ids = self._ids
+        scores = {ids[row]: self._score_from_distance(self.metric, dist)
+                  for row, dist in zip(labels[0].tolist(), distances[0].tolist())}
         # Work units must be COMPARABLE to the exact path (which reports one
         # unit per distance computation), or ANN looks artificially free. An
         # HNSW search keeps ~ef candidates and computes distances to each one's

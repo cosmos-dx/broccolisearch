@@ -209,7 +209,8 @@ class Optimizer:
         # it makes the absolute number honest for `latency_budget_ms`.
         latency = self.pipeline_ms
         recalls: List[float] = []
-        cardinality = 0
+        retrieved = 0
+        n_retrieval_steps = 0
 
         for step in plan.steps:
             if step.op == "filter":
@@ -218,19 +219,23 @@ class Optimizer:
                 # them again would import avoidable error (and the independence
                 # assumption behind multiplied selectivities) for no benefit.
                 latency += ctx.filter_ms
-                cardinality = ctx.domain_size
-            elif step.op == "lexical":
-                est = self.lexical.estimate(ctx.terms, step.budget)
+            elif step.op in ("lexical", "vector"):
+                est = (self.lexical.estimate(ctx.terms, step.budget)
+                       if step.op == "lexical"
+                       else self.vector.estimate(ctx.query.semantic, step.budget))
                 latency += est.latency_ms
                 recalls.append(est.recall)
-                cardinality = max(cardinality, est.cardinality)
-            elif step.op == "vector":
-                est = self.vector.estimate(ctx.query.semantic, step.budget)
-                latency += est.latency_ms
-                recalls.append(est.recall)
-                cardinality = max(cardinality, est.cardinality)
+                # Retrieval stages EMIT candidates; a filter does not. Folding
+                # the filter's survivor count in here charged every filtered
+                # plan for ranking the whole domain instead of the handful of
+                # candidates retrieved from it — which penalised exactly the
+                # push-down the optimizer is supposed to favour.
+                retrieved += est.cardinality
+                n_retrieval_steps += 1
 
-        n_fuse = min(cardinality, self._candidate_budget(ctx.query.k))
+        # No retrieval stage means the filter IS the answer, and the executor
+        # ranks every survivor.
+        n_fuse = retrieved if n_retrieval_steps else ctx.domain_size
         if plan.fusion != "none":
             latency += n_fuse * self.fusion_ms_per_doc
         latency += n_fuse * self.rank_ms_per_doc

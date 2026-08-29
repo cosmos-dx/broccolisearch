@@ -17,7 +17,7 @@ import pytest
 import broccoli
 from broccoli.indexes.lexical import analyze
 from broccoli.optimizer import QueryContext, RuleBasedPolicy
-from broccoli.query import Plan, PlanEstimate, Query
+from broccoli.query import Eq, Plan, PlanEstimate, Query
 from broccoli.types import Budget, CandidateSet
 
 DIM = 16
@@ -285,6 +285,96 @@ def test_ann_work_scales_with_ef(index, corpus):
     dear = index.vector.search(list(centroids[0]), Budget(candidates=10, ef=256))
     assert dear.examined > cheap.examined
     assert cheap.examined > 16, "ef alone under-counts HNSW distance computations"
+
+
+def test_estimate_is_graded_against_end_to_end_latency(index, corpus):
+    """The estimate covers the whole query (it includes `pipeline_ms`), so the
+    'actual' it is compared against must too. Grading it against execution time
+    alone reported an error the cost model had not actually made."""
+    centroids, _ = corpus
+    res = index.search(text="concept1", semantic=list(centroids[1]), k=5,
+                       explain=True)
+    assert res.explain.execution_ms > 0.0
+    assert res.explain.actual_latency_ms >= res.explain.execution_ms
+    logged = index.stats.history[-1]
+    assert logged.actual_latency_ms == pytest.approx(
+        res.explain.actual_latency_ms, rel=1e-9)
+
+
+def test_filter_survivors_are_not_charged_as_rankable_candidates(index):
+    """A filter feeds a retrieval stage; it does not emit candidates to rank.
+    Counting its survivors as rankable inflated every filtered plan's cost and
+    biased the optimizer against the push-down it is supposed to prefer."""
+    wide = index.search(text="concept1", where={"category": "seeds"}, k=5,
+                        explain=True)
+    ranked = [s for s in wide.explain.stages if s.op == "rank"][0]
+    filtered = [s for s in wide.explain.stages if s.op == "filter"][0]
+    assert ranked.candidates_in < filtered.candidates_out
+
+    # And the estimate must agree: growing the survivor count while the
+    # retrieval stage still emits the same candidates must not move the cost.
+    query = Query(text="concept1", where={"category": Eq("seeds")}, k=5)
+    ctx = index.optimizer.featurize(query, len(index))
+    plan = [p for p in index.optimizer.enumerate_plans(ctx)
+            if p.name == "lexical"][0]
+    base = index.optimizer.estimate_plan(plan, ctx).latency_ms
+    ctx.domain_size = 1_000_000
+    assert index.optimizer.estimate_plan(plan, ctx).latency_ms == \
+        pytest.approx(base, rel=1e-9)
+
+
+def test_lexical_join_order_does_not_change_scores(index):
+    """`search` scans whichever of (posting list, domain) is smaller. Both
+    directions must produce byte-identical scores, or push-down would silently
+    change relevance instead of just making it faster."""
+    term = max(index.lexical.postings, key=index.lexical.df)
+    everything = set(index.lexical.doc_len)
+    tiny = set(sorted(index.lexical.postings[term])[:3])
+
+    # Same domain, reached by the two different iteration orders.
+    from_postings = index.lexical.search(
+        [term], Budget(candidates=500, domain=everything)).scores
+    both = {d: s for d, s in from_postings.items() if d in tiny}
+    from_domain = index.lexical.search(
+        [term], Budget(candidates=500, domain=tiny)).scores
+    assert from_domain == both
+    assert len(tiny) < index.lexical.df(term), "test needs the domain to be smaller"
+
+
+def test_lexical_remove_with_fields_matches_full_sweep(corpus):
+    """The fast delete path only visits the terms a document contains; it must
+    leave the index in exactly the state the exhaustive sweep would."""
+    from broccoli.indexes.lexical import LexicalIndex
+    _, docs = corpus
+    fields = {"title": "english", "body": "english"}
+    fast, slow = LexicalIndex(fields), LexicalIndex(fields)
+    for i, doc in enumerate(docs[:40]):
+        fast.add(i, doc)
+        slow.add(i, doc)
+
+    fast.remove(7, docs[7])
+    slow.remove(7)
+    assert {t: p for t, p in fast.postings.items() if p} == \
+           {t: p for t, p in slow.postings.items() if p}
+    assert fast.doc_len == slow.doc_len
+
+
+def test_top_k_matches_a_full_sort_including_ties():
+    """nlargest replaced a full sort; ties must still break by doc id."""
+    from broccoli import ranking
+    scores = {5: 1.0, 3: 1.0, 9: 1.0, 1: 2.0, 7: 0.5}
+    reference = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+    for k in range(1, len(scores) + 2):
+        assert ranking.top_k(scores, k) == reference[:k]
+
+
+def test_vector_rows_for_ignores_unknown_and_deleted_ids(index):
+    """The vectorised domain lookup must drop ids this index never saw and ids
+    that are tombstoned — a stray row would score a deleted document."""
+    known = list(index.vector._row_of)[:5]
+    budget = Budget(candidates=10, domain=set(known) | {10 ** 9})
+    rows = index.vector._rows_for(budget)
+    assert sorted(rows.tolist()) == sorted(index.vector._row_of[d] for d in known)
 
 
 def test_fit_linear_survives_a_descheduled_sample():

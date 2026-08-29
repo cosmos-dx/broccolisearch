@@ -15,6 +15,7 @@ import time
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Union
 
 from . import ranking
+from .calibration import TIMING_REPEATS
 from .execution import Executor
 from .indexes import LexicalIndex, StructuredIndex, VectorIndex
 from .optimizer import Optimizer, Policy, RuleBasedPolicy
@@ -168,7 +169,7 @@ class Index:
         # Tombstone: every engine shares this set and skips these ids.
         self._deleted.add(internal)
         if self.lexical:
-            self.lexical.remove(internal)
+            self.lexical.remove(internal, self._docs.get(internal))
         if self.structured:
             self.structured.remove(internal)
         if self.vector:
@@ -218,13 +219,22 @@ class Index:
         if term is None:
             return 0.0
         samples = []
-        for _ in range(9):
-            started = time.perf_counter()
-            results = self.search(text=term, k=10, explain=True)
-            wall = (time.perf_counter() - started) * 1000.0
-            samples.append(max(wall - results.explain.actual_latency_ms, 0.0))
-        samples.sort()
-        return samples[len(samples) // 2]
+        history = self.stats.history
+        try:
+            # These are synthetic probes, not user traffic. Leaving them in the
+            # history would poison the training signal a LearnedPolicy reads.
+            self.stats.history = []
+            for _ in range(3):  # warm caches before the first timed sample
+                self.search(text=term, k=10, explain=True)
+            for _ in range(TIMING_REPEATS):
+                ex = self.search(text=term, k=10, explain=True).explain
+                samples.append(max(ex.actual_latency_ms - ex.execution_ms, 0.0))
+        finally:
+            self.stats.history = history
+        # min, like every other calibration: this constant is the largest term
+        # in a sub-0.1ms query's estimate, so its own run-to-run noise became
+        # the dominant source of cost-model error once the operators were fixed.
+        return min(samples)
 
     def _filter_calibration_samples(self) -> List[Dict[str, Predicate]]:
         """Build filters whose result sizes SPAN a wide range.
@@ -271,6 +281,7 @@ class Index:
         if not self._calibrated and len(self):
             self.calibrate()
 
+        started = time.perf_counter()
         vector = self._resolve_semantic(semantic, text)
         predicates = normalize_where(where)
         if recent:
@@ -282,19 +293,26 @@ class Index:
 
         plan, ctx, considered = self.optimizer.plan(query, len(self))
         timestamps = self._timestamps() if decay else None
-        results, stages, actual_ms = self.executor.run(
+        results, stages, execution_ms = self.executor.run(
             plan, ctx, timestamps=timestamps, reranker=rerank)
-
-        # Close the loop: estimate vs. actual is logged for every query. This is
-        # the training signal a LearnedPolicy will consume (SystemDesign §5).
-        self.stats.observe(ctx.features, plan.name, plan.estimate.latency_ms,
-                           plan.estimate.recall, actual_ms, len(results))
-        self.optimizer.policy.observe(plan, ctx, actual_ms, len(results))
 
         hits = [Hit(id=self._ext_ids[doc_id], score=float(score),
                     doc=self._docs.get(doc_id, {}))
                 for doc_id, score in results]
-        payload = Explain(plan=plan, stages=stages, actual_latency_ms=actual_ms,
+        # Compare like with like: the estimate covers the whole query including
+        # planning and marshalling, so the actual it is scored against must too.
+        # Charging the estimate for `pipeline_ms` and then grading it against
+        # execution time alone reported an error the model had not made.
+        total_ms = (time.perf_counter() - started) * 1000.0
+
+        # Close the loop: estimate vs. actual is logged for every query. This is
+        # the training signal a LearnedPolicy will consume (SystemDesign §5).
+        self.stats.observe(ctx.features, plan.name, plan.estimate.latency_ms,
+                           plan.estimate.recall, total_ms, len(results))
+        self.optimizer.policy.observe(plan, ctx, total_ms, len(results))
+
+        payload = Explain(plan=plan, stages=stages, actual_latency_ms=total_ms,
+                          execution_ms=execution_ms,
                           considered=considered) if explain else None
         return Results(hits, payload)
 

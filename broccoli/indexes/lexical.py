@@ -11,6 +11,7 @@ BaseIndex interface is what the optimizer depends on, not this implementation.
 
 from __future__ import annotations
 
+import heapq
 import math
 import re
 import time
@@ -91,11 +92,27 @@ class LexicalIndex(BaseIndex):
         self.doc_len[doc_id] = length
         self._total_len += length
 
-    def remove(self, doc_id: int) -> None:
+    def remove(self, doc_id: int, fields: Optional[Dict[str, Any]] = None) -> None:
+        """Drop a document's postings.
+
+        Given the document's fields this touches only the terms it actually
+        contains; without them it must sweep the whole vocabulary, which makes
+        a single delete cost O(vocabulary) instead of O(document length).
+        """
         length = self.doc_len.pop(doc_id, 0)
         self._total_len -= length
-        for postings in self.postings.values():
-            postings.pop(doc_id, None)
+        if fields is None:
+            for postings in self.postings.values():
+                postings.pop(doc_id, None)
+            return
+        for name, analyzer in self.fields.items():
+            value = fields.get(name)
+            if not value:
+                continue
+            for token in analyze(value, analyzer):
+                postings = self.postings.get(token)
+                if postings:
+                    postings.pop(doc_id, None)
 
     @property
     def n_docs(self) -> int:
@@ -120,7 +137,9 @@ class LexicalIndex(BaseIndex):
 
     def estimate(self, terms: Iterable[str], budget: Budget) -> CostEstimate:
         terms = list(terms)
-        work = sum(self.df(t) for t in terms)
+        cap = len(budget.domain) if budget.domain is not None else None
+        work = sum(min(self.df(t), cap) if cap is not None else self.df(t)
+                   for t in terms)
         # Union cardinality upper bound; cheap and good enough to plan with.
         cardinality = min(work, self.n_docs)
         if budget.domain is not None:
@@ -157,15 +176,14 @@ class LexicalIndex(BaseIndex):
             # selective filter leaving 50 survivors should not drag a 50k-entry
             # posting list through the interpreter to discard 99.9% of it.
             if domain is not None and len(domain) < df:
-                pairs = ((d, postings[d]) for d in domain if d in postings)
                 examined += len(domain)
+                pairs = ((d, postings[d]) for d in domain if d in postings)
             else:
-                pairs = postings.items()
                 examined += df
+                pairs = ((d, tf) for d, tf in postings.items()
+                         if domain is None or d in domain)
             for doc_id, tf in pairs:
                 if doc_id in self.deleted:
-                    continue
-                if domain is not None and doc_id not in domain:
                     continue
                 dl = self.doc_len.get(doc_id, 0)
                 denom = tf + K1 * (1 - B + B * dl / avgdl)
