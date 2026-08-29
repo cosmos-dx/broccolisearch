@@ -146,25 +146,33 @@ class LexicalIndex(BaseIndex):
         examined = 0
         n = max(self.n_docs, 1)
         avgdl = self.avgdl or 1.0
+        domain = budget.domain
         for term in terms:
             postings = self.postings.get(term)
             if not postings:
                 continue
             df = len(postings)
             idf = math.log(1.0 + (n - df + 0.5) / (df + 0.5))
-            for doc_id, tf in postings.items():
-                examined += 1
+            # Iterate whichever side is smaller — the classic join order. A
+            # selective filter leaving 50 survivors should not drag a 50k-entry
+            # posting list through the interpreter to discard 99.9% of it.
+            if domain is not None and len(domain) < df:
+                pairs = ((d, postings[d]) for d in domain if d in postings)
+                examined += len(domain)
+            else:
+                pairs = postings.items()
+                examined += df
+            for doc_id, tf in pairs:
                 if doc_id in self.deleted:
                     continue
-                if budget.domain is not None and doc_id not in budget.domain:
+                if domain is not None and doc_id not in domain:
                     continue
                 dl = self.doc_len.get(doc_id, 0)
                 denom = tf + K1 * (1 - B + B * dl / avgdl)
                 scores[doc_id] = scores.get(doc_id, 0.0) + idf * (tf * (K1 + 1)) / denom
         if len(scores) > budget.candidates:
-            keep = sorted(scores.items(), key=lambda kv: kv[1],
-                          reverse=True)[: budget.candidates]
-            scores = dict(keep)
+            scores = dict(heapq.nlargest(budget.candidates, scores.items(),
+                                         key=lambda kv: (kv[1], -kv[0])))
         cs = CandidateSet(scores=scores, source=self.name, examined=examined)
         self._last_latency_ms = (time.perf_counter() - started) * 1000.0
         return cs

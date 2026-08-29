@@ -120,10 +120,9 @@ class Optimizer:
         # selectivity, which is the single most valuable input to the cost model.
         if query.has_filter and self.structured is not None:
             started = time.perf_counter()
-            cs = self.structured.filter(query.where)
+            ctx.domain, _ = self.structured.matching_ids(query.where)
             ctx.filter_ms = (time.perf_counter() - started) * 1000.0
-            ctx.domain = cs.ids
-            ctx.domain_size = len(cs.ids)
+            ctx.domain_size = len(ctx.domain)
         elif self.structured is not None and self.structured.deleted:
             ctx.domain = self.structured.live()
             ctx.domain_size = len(ctx.domain)

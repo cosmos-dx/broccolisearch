@@ -7,6 +7,7 @@ actually tuned weights on their own data.
 
 from __future__ import annotations
 
+import heapq
 from typing import Callable, Dict, List, Optional, Sequence
 
 from .types import CandidateSet
@@ -62,8 +63,16 @@ def fuse(candidate_sets: Sequence[CandidateSet], strategy: str = "rrf",
 
 
 def top_k(scores: Dict[int, float], k: int) -> List[tuple]:
-    """Stable top-k: ties broken by doc id so results are deterministic."""
-    return sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))[:k]
+    """Stable top-k: ties broken by doc id so results are deterministic.
+
+    `nlargest` is O(n log k) against a full sort's O(n log n). That gap is the
+    difference between ranking the answer and ranking the corpus — a filter-only
+    query scores every surviving document, so a 100k-survivor filter was paying
+    for a 100k-element sort to return 10 hits.
+    """
+    if k >= len(scores):
+        return sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+    return heapq.nlargest(k, scores.items(), key=lambda kv: (kv[1], -kv[0]))
 
 
 def apply_recency(scores: Dict[int, float], timestamps: Dict[int, float],

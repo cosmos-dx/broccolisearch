@@ -55,6 +55,7 @@ class VectorIndex(BaseIndex):
         self._rows: List[np.ndarray] = []
         self._matrix: Optional[np.ndarray] = None
         self._row_of: Dict[int, int] = {}
+        self._row_lookup = np.empty(0, dtype=np.int64)
         self._ann = None
         self._dirty = True
         # Calibrated: ef -> {"latency_ms", "recall"}; and cost of an exact scan
@@ -104,10 +105,17 @@ class VectorIndex(BaseIndex):
             return
         if not self._ids:
             self._matrix = np.zeros((0, self.dim), dtype=np.float32)
+            self._row_lookup = np.empty(0, dtype=np.int64)
             self._ann = None
             self._dirty = False
             return
         self._matrix = np.vstack(self._rows).astype(np.float32)
+        # Dense doc_id -> row table (-1 = not in this index). Doc ids are dense
+        # internal ints, so this is a plain gather instead of a per-document
+        # dict lookup — `_rows_for` is the hottest thing in the query path.
+        self._row_lookup = np.full(max(self._row_of) + 1, -1, dtype=np.int64)
+        for doc_id, row in self._row_of.items():
+            self._row_lookup[doc_id] = row
         if self.metric == "cosine":
             norms = np.linalg.norm(self._matrix, axis=1, keepdims=True)
             self._unit = self._matrix / np.maximum(norms, 1e-12)
@@ -244,13 +252,27 @@ class VectorIndex(BaseIndex):
         return cs
 
     def _rows_for(self, budget: Budget):
-        """Restrict the scan to the pushed-down domain (minus deletions)."""
+        """Restrict the scan to the pushed-down domain (minus deletions).
+
+        Vectorised: the per-document dict lookups and membership tests this
+        replaced were the single largest cost in the query path.
+        """
         if budget.domain is None:
-            allowed = [i for i, d in enumerate(self._ids) if d not in self.deleted]
-        else:
-            allowed = [self._row_of[d] for d in budget.domain
-                       if d in self._row_of and d not in self.deleted]
-        return np.asarray(allowed, dtype=np.int64)
+            if not self.deleted:
+                return np.arange(len(self._ids), dtype=np.int64)
+            live = [i for i, d in enumerate(self._ids) if d not in self.deleted]
+            return np.asarray(live, dtype=np.int64)
+
+        domain = budget.domain
+        if self.deleted:
+            domain = domain - self.deleted
+        ids = np.fromiter(domain, dtype=np.int64, count=len(domain))
+        if ids.size:
+            ids = ids[ids < self._row_lookup.size]
+        if not ids.size:
+            return np.empty(0, dtype=np.int64)
+        rows = self._row_lookup[ids]
+        return rows[rows >= 0]
 
     def _search_exact(self, query: np.ndarray, budget: Budget, k: int):
         rows = self._rows_for(budget)

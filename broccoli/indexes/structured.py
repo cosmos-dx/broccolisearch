@@ -93,8 +93,14 @@ class StructuredIndex(BaseIndex):
             return set(ids[lo:hi])
         raise TypeError(f"unsupported predicate {type(pred).__name__}")
 
-    def filter(self, where: Dict[str, Predicate]) -> CandidateSet:
-        """Intersect predicates into an allowed-id set (the pushdown domain)."""
+    def matching_ids(self, where: Dict[str, Predicate]) -> Tuple[Set[int], int]:
+        """Intersect predicates into an allowed-id set (the pushdown domain).
+
+        Returns the raw set, not a `CandidateSet`: the planner wants exactly
+        this and nothing else, and on a filter matching tens of thousands of
+        documents, building a `{id: 1.0}` score map and converting it back to a
+        set was one of the largest costs in the query path.
+        """
         started = time.perf_counter()
         result: Optional[Set[int]] = None
         examined = 0
@@ -110,10 +116,13 @@ class StructuredIndex(BaseIndex):
             result = self.live()
         elif self.deleted:
             result = result - self.deleted
-        cs = CandidateSet(scores={d: 1.0 for d in result}, source=self.name,
-                          examined=examined)
         self._last_latency_ms = (time.perf_counter() - started) * 1000.0
-        return cs
+        return result, examined
+
+    def filter(self, where: Dict[str, Predicate]) -> CandidateSet:
+        ids, examined = self.matching_ids(where)
+        return CandidateSet(scores=dict.fromkeys(ids, 1.0), source=self.name,
+                            examined=examined)
 
     def _selectivity(self, name: str, pred: Predicate) -> float:
         """Fraction of the corpus a predicate is expected to keep (0..1)."""
@@ -153,7 +162,7 @@ class StructuredIndex(BaseIndex):
             best = float("inf")
             for _ in range(TIMING_REPEATS):
                 started = time.perf_counter()
-                matched = len(self.filter(where))
+                matched = len(self.matching_ids(where)[0])
                 best = min(best, time.perf_counter() - started)
             points.append((float(matched), best))
         base_s, slope_s = fit_linear(points)
