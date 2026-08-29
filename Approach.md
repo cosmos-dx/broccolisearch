@@ -48,7 +48,11 @@ Laziness = efficiency, not carelessness. We do *not* cut corners on:
 - **Trust boundaries.** Validate documents/queries at ingest and API edges (dimension mismatch, oversized fields, malformed filters).
 - **Durability.** Crash-safety (WAL + atomic manifest) is non-negotiable; losing indexed data is unacceptable.
 - **Measurement.** No retrieval change ships without a recall/nDCG/latency number on a labeled set.
-- **Calibration to real behavior.** ANN recall/latency curves are dataset-dependent; measure them, don't assume the spec-ideal.
+- **Calibration to real behavior.** ANN recall/latency curves are dataset-dependent; measure them, don't assume the spec-ideal. Three rules, each learned the hard way (SystemDesign.md §6.4.1):
+  - **Calibrate the operator, not the kernel.** Time what execution runs end to end, including result marshalling — not the inner `knn_query` or dot product.
+  - **Calibrate on the access pattern you execute.** Real filters yield scattered ids; timing a contiguous prefix measures a memory gather that never happens in production.
+  - **Fit robustly.** Timing noise is one-sided — a process can only be interrupted and made slower — so least squares chases outliers. Use a median-based (Theil–Sen) fit over min-of-N samples. This is not a micro-optimization: under OLS, recalibrating an unchanged corpus moved constants by four orders of magnitude, which moved plan choice for reasons unrelated to the query.
+- **Constants are measured once, not learned online.** A cost term updated from live traffic couples queries together: query N's plan silently depends on query N−1's latency, and results stop being reproducible. Calibrate at build time; leave adaptation to an explicit `LearnedPolicy`.
 - **Explainability.** The optimizer must always be able to say *why* it chose a plan.
 
 Non-trivial logic leaves **one runnable check** behind — the smallest thing that fails if the logic breaks (an assert-based self-check or a tiny test), no frameworks, no fixtures. Trivial one-liners need none.
@@ -98,7 +102,9 @@ For a search engine specifically: a "wrong results" bug is usually in **analysis
 - **Report per query class**, not just aggregate — the optimizer's whole value is making *different* decisions for different query types; an aggregate can hide that.
 - **Labeled datasets only** for quality claims (BEIR / MS MARCO). Synthetic timing is fine for latency micro-benchmarks.
 - **Regression guard:** the eval harness runs on a fixed dataset subset; a retrieval change that drops recall or nDCG without a latency justification is rejected.
-- **Estimate-vs-actual tracking:** the optimizer logs predicted vs. real cost. A large gap is a cost-model bug and is treated as a first-class defect (a mis-calibrated optimizer makes bad plans confidently).
+- **Estimate-vs-actual tracking:** the optimizer logs predicted vs. real cost. A large gap is a cost-model bug and is treated as a first-class defect (a mis-calibrated optimizer makes bad plans confidently). `examples/cost_model_error.py` is the instrument; it reports error per query shape and per chosen plan, because an aggregate hides which operator is wrong.
+- **Qualify the instrument before trusting it.** Run the measurement several times unchanged and look at the spread first. Ours swung 18%→81% run to run, which meant it could not resolve the differences we were reacting to — we were tuning noise. Fixing the *instrument* (and the calibration variance behind it) was worth more than any estimate-formula change.
+- **Score the model against the statistic it was calibrated on.** Calibration times operators with `min()`, so the model predicts interference-free cost; grading it against a median charges it for scheduler noise it deliberately excluded.
 
 ---
 

@@ -287,6 +287,65 @@ def test_ann_work_scales_with_ef(index, corpus):
     assert cheap.examined > 16, "ef alone under-counts HNSW distance computations"
 
 
+def test_fit_linear_survives_a_descheduled_sample():
+    """Timing noise is one-sided: a sample can only ever come back too SLOW.
+
+    Least squares let a single such outlier drag the slope far enough that
+    calibrated constants moved by orders of magnitude between identical runs.
+    """
+    from broccoli.calibration import fit_linear
+    clean = [(x, 2.0 + 3.0 * x) for x in (1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0)]
+    base, slope = fit_linear(clean + [(4.0, 500.0)])
+    assert slope == pytest.approx(3.0, abs=0.2)
+    assert base == pytest.approx(2.0, abs=1.0)
+
+
+def test_vector_estimate_prices_the_ef_that_will_actually_run(index, corpus):
+    """`_search_ann` widens ef to fit the candidate budget, so an estimate made
+    at the requested ef would under-price what the executor really does."""
+    centroids, _ = corpus
+    vec = list(centroids[0])
+    small = index.vector.estimate(vec, Budget(candidates=10, ef=16, k=10))
+    large = index.vector.estimate(vec, Budget(candidates=500, ef=16, k=10))
+    assert large.latency_ms > small.latency_ms
+
+
+def test_ann_curve_extrapolates_beyond_the_calibrated_ladder(index):
+    """Clamping to the widest measured ef made large budgets look free."""
+    widest = max(index.vector.curve)
+    at_edge = index.vector._curve_at(widest)["latency_ms"]
+    beyond = index.vector._curve_at(widest * 4)["latency_ms"]
+    assert beyond > at_edge
+
+
+def test_selective_filter_is_scanned_exactly_not_walked(index, corpus):
+    """A filter that leaves few survivors should be scanned exhaustively: that
+    is both cheaper AND exact. The choice must come from comparing costs, not
+    from a hardcoded size threshold."""
+    domain = set(list(index.vector._row_of)[:5])
+    budget = Budget(candidates=50, ef=64, domain=domain, k=10)
+    assert index.vector._mode(budget) == "exact"
+    assert index.vector.estimate(list(corpus[0][0]), budget).recall == 1.0
+
+
+def test_pipeline_overhead_does_not_change_plan_ranking(index, corpus):
+    """The fixed per-query cost is identical across candidate plans, so it must
+    shift every estimate equally and never flip which plan wins."""
+    centroids, _ = corpus
+    query = Query(text="concept1", semantic=list(centroids[1]), k=5)
+    index.optimizer.pipeline_ms = 0.0
+    without = [(p.name, p.estimate.latency_ms)
+               for p in index.optimizer.enumerate_plans(
+                   index.optimizer.featurize(query, len(index)))]
+    index.optimizer.pipeline_ms = 5.0
+    with_ = [(p.name, p.estimate.latency_ms)
+             for p in index.optimizer.enumerate_plans(
+                 index.optimizer.featurize(query, len(index)))]
+    assert [n for n, _ in without] == [n for n, _ in with_]
+    for (_, a), (_, b) in zip(without, with_):
+        assert b - a == pytest.approx(5.0, abs=1e-9)
+
+
 # ------------------------------ optimizer ---------------------------------- #
 
 

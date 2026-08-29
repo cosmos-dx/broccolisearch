@@ -66,6 +66,13 @@ BroccoliSearch is that missing layer. The individual index engines are treated a
 
 Reading order for a newcomer: **document → Information → PRD → Architecture → SystemDesign → Approach → Research → SHAPE**.
 
+Two programs turn the claims above into numbers, and either can contradict the docs:
+
+| Run | Answers |
+|---|---|
+| `python3 examples/demo.py` | Does the optimizer actually beat every fixed strategy on work-at-fixed-recall? |
+| `python3 examples/cost_model_error.py` | How wrong are the cost estimates, per query shape and per chosen plan? |
+
 ---
 
 ## 4. Glossary (canonical vocabulary)
@@ -84,6 +91,8 @@ Terms below are used identically across all documents.
 - **Ranking / reranking:** expensive, high-precision stage that orders candidates.
 - **Hybrid ranking / fusion:** combining scores from multiple indexes (e.g. **RRF** — Reciprocal Rank Fusion — as the strong baseline; learned fusion later).
 - **Cost model:** estimates the (latency, recall) cost of an operator or plan.
+- **Calibration:** measuring the cost model's constants on the machine and corpus actually in use, rather than hardcoding them. Fitted from timed samples as `latency = base + work × slope` (SystemDesign.md §6.4.1).
+- **Work units:** a deterministic count of algorithmic effort (postings scanned, distance computations). Preferred over wall-clock when comparing plans, because at sub-millisecond scale interpreter and scheduler noise exceeds the difference between plans.
 - **Query plan / execution plan:** the concrete sequence of index operations chosen by the optimizer to answer a query.
 - **Optimizer / planner (CBO):** the component that enumerates candidate plans and picks the cheapest one meeting the recall target.
 - **Candidate budget:** how many candidates a stage is allowed to produce (a tunable knob the optimizer sets).

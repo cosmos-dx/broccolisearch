@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set
 
 import numpy as np
 
-from ..calibration import fit_linear
+from ..calibration import TIMING_REPEATS, fit_linear
 from ..types import Budget, Capabilities, CandidateSet, CostEstimate
 from . import BaseIndex
 
@@ -321,7 +321,7 @@ class VectorIndex(BaseIndex):
             budget = Budget(candidates=k, ef=k, domain=domain)
             for q in queries[:6]:
                 best = min(_time_once(self._search_exact, q, budget, k)
-                           for _ in range(3))
+                           for _ in range(TIMING_REPEATS))
                 points.append((float(size), best))
         base_s, slope_s = fit_linear(points)
         self.base_ms = base_s * 1000.0
@@ -345,7 +345,7 @@ class VectorIndex(BaseIndex):
             budget = Budget(candidates=k, ef=ef)
             for q, t in zip(queries, truth):
                 latencies.append(min(_time_once(self._search_ann, q, budget, k)
-                                     for _ in range(3)))
+                                     for _ in range(TIMING_REPEATS)))
                 labels, _ = self._ann.knn_query(q.reshape(1, -1), k=min(k, n))
                 hits += len(set(int(x) for x in labels[0]) & t)
             self.curve[int(ef)] = {
@@ -370,7 +370,7 @@ class VectorIndex(BaseIndex):
                 continue
             for q in queries[:4]:
                 best = min(_time_once(self._search_exact, q, budget, cand)
-                           for _ in range(3))
+                           for _ in range(TIMING_REPEATS))
                 points.append((float(cand), best))
         if len(points) >= 2:
             _, slope_s = fit_linear(points)
@@ -394,7 +394,7 @@ class VectorIndex(BaseIndex):
             budget = Budget(candidates=k, ef=ref_ef, domain=domain, k=k)
             for q in queries[:4]:
                 elapsed = min(_time_once(self._search_ann, q, budget, k)
-                              for _ in range(2))
+                              for _ in range(TIMING_REPEATS))
                 points.append((n / size, (elapsed * 1000.0) / baseline))
         if len(points) >= 2:
             a, b = fit_linear(points)

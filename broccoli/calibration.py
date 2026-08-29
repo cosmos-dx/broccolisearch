@@ -26,6 +26,14 @@ from typing import Sequence, Tuple
 
 Point = Tuple[float, float]  # (work_units, seconds)
 
+TIMING_REPEATS = 9
+"""Timings per calibration point, combined with min().
+
+The fastest run is the least contaminated by scheduler noise, so it estimates
+true cost better than a mean. Three repeats left enough noise in each point to
+destabilise the fit; nine is still only a few seconds of calibration.
+"""
+
 
 def fit_linear(points: Sequence[Point], min_slope: float = 1e-10,
                ) -> Tuple[float, float]:

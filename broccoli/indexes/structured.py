@@ -16,7 +16,7 @@ import bisect
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from ..calibration import fit_linear
+from ..calibration import TIMING_REPEATS, fit_linear
 from ..query import Eq, OneOf, Predicate, Range
 from ..types import Budget, Capabilities, CandidateSet, CostEstimate
 from . import BaseIndex
@@ -150,9 +150,12 @@ class StructuredIndex(BaseIndex):
             return
         points = []
         for where in sample:
-            started = time.perf_counter()
-            matched = len(self.filter(where))
-            points.append((float(matched), time.perf_counter() - started))
+            best = float("inf")
+            for _ in range(TIMING_REPEATS):
+                started = time.perf_counter()
+                matched = len(self.filter(where))
+                best = min(best, time.perf_counter() - started)
+            points.append((float(matched), best))
         base_s, slope_s = fit_linear(points)
         self.base_ms = base_s * 1000.0
         self.sec_per_doc = slope_s

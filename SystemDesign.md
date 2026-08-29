@@ -108,7 +108,7 @@ add(doc)
 - **Budget knob = `ef_search`.** `estimate()` returns a point on the **recall/latency curve** for the requested `ef_search`, calibrated from offline measurement of this dataset (see §6.3 — cost calibration).
 - Supports pre-filtered ANN: given a bitmap of allowed doc IDs (from structured filter), restrict the graph search to survivors ("filter-then-vector"). This is the mechanism behind "don't vector-search your whole database."
 
-> **Calibration note (`ponytail:`):** the recall/latency curve is dataset-dependent. We measure it once per index build (a handful of sample queries at several `ef_search` values) and store the curve in `broccoli-stats`. Ceiling: the curve is global, not per-query-type; upgrade path is per-cluster or learned curves.
+> **Calibration note (`ponytail:`):** the recall/latency curve is dataset-dependent. We measure it once per index build (a handful of sample queries at several `ef_search` values) and store the curve in `broccoli-stats`. Ceiling: the curve is global, not per-query-type; upgrade path is per-cluster or learned curves. See §6.4.1 for how the curve is fitted and §6.4.2 for how the engine decides between walking this curve and scanning exhaustively.
 
 ### 4.3 Structured (roaring bitmaps + columnar)
 
@@ -176,6 +176,65 @@ choose plan = argmin est_latency  subject to  est_recall ≥ target.recall
 - **Deterministic operators** (lexical, structured): recall ≈ 1 within their capability; latency ≈ f(cardinality).
 - **Approximate operators** (vector): recall = curve(ef_search); latency = curve(ef_search). The optimizer *rides the curve* to spend the minimum ef that hits the recall target — and can shrink the vector search domain first via the structured bitmap (cheaper curve because fewer candidates).
 - **Filter-first rewrite:** if a selective filter exists, push it down so vector/lexical operate on the survivor bitmap. This is the single biggest latency win and falls straight out of cardinality estimation.
+
+Every operator prices as `base + work × slope`, where both terms are measured
+(§6.4.1), never hardcoded. Beyond that, four rules keep the estimate honest —
+each one was added because measurement showed the model was wrong without it:
+
+- **Price the parameters that will actually run, not the ones requested.** The
+  vector operator widens `ef` to fit the candidate budget, so an estimate made
+  at the *requested* `ef` under-prices the real search. The estimate and the
+  executor read the effective value from the same helper.
+- **Cost is a function of `k`, not only of cardinality.** Every operator
+  marshals `candidates` hits into a scored map, and candidate budgets run ~5×
+  `k`. Charging only for documents scanned priced a 250-candidate request like
+  a 10-candidate one.
+- **Prefer observed facts to predicted ones.** The filter *already ran* during
+  featurization, so its cost and cardinality are known. Re-estimating them
+  would import avoidable error — including the independence assumption behind
+  multiplied selectivities — for no benefit.
+- **Extrapolate past the calibrated range, never clamp to it.** Beyond the
+  measured `ef` ladder, cost grows ~linearly in `ef`; clamping to the widest
+  measured point made large budgets look free.
+
+A constant `pipeline_ms` (planning, query resolution, building `Results`) is
+added to every plan. Being identical across candidates it cannot change which
+plan wins; it exists so `latency_budget_ms` is compared against an honest
+number. It is measured once at calibration — deliberately *not* learned from
+live traffic, which would make query N's plan depend on query N−1.
+
+#### 6.4.1 Calibration
+
+Constants are measured on the machine and corpus actually in use. Three rules,
+all of which cost us real accuracy before they were adopted:
+
+1. **Calibrate the operator, not the kernel.** Time the whole `search()` entry
+   point, including Python-side marshalling — not just the inner `knn_query`
+   or dot product.
+2. **Calibrate on the access pattern you execute.** A real filter yields ids
+   scattered across the matrix, so timing a contiguous id prefix measures a
+   cheaper memory gather than execution ever performs.
+3. **Fit robustly.** Timing noise is one-sided — a process can only be
+   interrupted and made slower, never made faster than the hardware allows —
+   so ordinary least squares chases outliers. `fit_linear` uses Theil–Sen
+   (median of pairwise slopes) over min-of-N samples per point.
+
+The third rule mattered most. Under OLS, repeated calibration of an unchanged
+corpus produced constants varying by up to **four orders of magnitude**, so
+plan choice moved for reasons unrelated to the query. Under Theil–Sen the same
+constants repeat within ~±5%.
+
+#### 6.4.2 Exact vs approximate is itself a cost decision
+
+The vector engine chooses an exhaustive scan or an HNSW walk by **comparing
+estimated costs**, not by a size threshold. Filtered ANN is far more expensive
+than plain ANN because hnswlib invokes a Python predicate for every node it
+visits, and the penalty is measured rather than assumed. When the exact scan
+wins it *strictly dominates*: recall 1.0 for less work.
+
+This replaced a hardcoded `EXACT_SCAN_MAX = 2048`. Measurement showed the
+threshold routinely chose the slower path — filtered queries got **3–5×
+faster** once the cost model made the call instead.
 
 ### 6.5 Policy: rule-based now, learned later
 

@@ -59,22 +59,34 @@ Measured on a 50k-document mixed workload (keyword / semantic / filtered queries
 ```
 strategy                 recall     nDCG     MRR        work    target
 ----------------------------------------------------------------------
-ADAPTIVE (optimizer)      1.000    1.000   1.000        6200      yes
+ADAPTIVE (optimizer)      1.000    1.000   1.000        8200      yes
 lexical                   0.400    0.451   0.667        3377       NO
-vector                    1.000    1.000   1.000        7583      yes
-hybrid_rrf                1.000    1.000   1.000        7607      yes
+vector                    1.000    1.000   1.000        9583      yes
+hybrid_rrf                1.000    1.000   1.000        9607      yes
 
-work-at-fixed-recall: adaptive 6200 units vs best fixed (vector) 7583 → 1.22x
+work-at-fixed-recall: adaptive 8200 units vs best fixed (vector) 9583 → 1.17x
 ```
 
-The optimizer matches the best fixed strategy's recall using **1.22× less work**, and it does so *without being told which strategy to use* — routing to `lexical` for all 40 keyword queries and `vector` for the 80 semantic/filtered ones, deterministically. `lexical` alone is cheapest but fails the recall bar; the two vector strategies hit recall but overpay on queries that never needed a vector search.
+The optimizer matches the best fixed strategy's recall using **1.17× less work**, and it does so *without being told which strategy to use* — routing to `lexical` for the keyword queries and `vector`/`hybrid_rrf` for the semantic and filtered ones, deterministically. `lexical` alone is cheapest but fails the recall bar; the two vector strategies hit recall but overpay on queries that never needed a vector search.
 
 **Honest caveats**, because the project's own rules require a measured number with its limits stated:
 
-- The win here is **1.22×, not dramatic**. Filter push-down happens during planning and therefore benefits *every* strategy including the fixed ones, so this workload understates what the optimizer would save in a system where fixed strategies don't get that for free.
+- The win here is **1.17×, not dramatic**. Filter push-down happens during planning and therefore benefits *every* strategy including the fixed ones, so this workload understates what the optimizer would save in a system where fixed strategies don't get that for free.
 - **Work units, not wall-clock, are the trustworthy metric.** At this scale in Python, latency swings ~15% with run *order* alone (cold caches) — larger than the gap between plans. The latency columns are indicative only.
-- The cost model's mean estimate error is ~30–65% and is concentrated in sub-0.05ms operations where interpreter noise dominates. It is calibrated for **ranking plans correctly**, which the tests assert, not for predicting absolute latency.
+- The cost model's estimate error is **~20% median** (`examples/cost_model_error.py`), down from ~85%, and what remains is concentrated in sub-0.05ms operations where interpreter noise dominates. It is calibrated for **ranking plans correctly**, which the tests assert, not for predicting absolute latency.
 - The workload is synthetic. Running this on judged data (BEIR / MS MARCO) is the next real step.
+
+### Fixing the cost model was also a speedup
+
+Making the estimates accurate was not just bookkeeping — a wrong cost model was making wrong plans:
+
+| Fix | Effect |
+|---|---|
+| Exact-vs-ANN chosen by **comparing costs** instead of a hardcoded `EXACT_SCAN_MAX = 2048` | filtered queries **3–5× faster** (the threshold kept picking the slower path) |
+| `VectorIndex.n_docs` no longer rebuilds a set of every id on each call | planning **6.4× cheaper**; it had been costing more than execution |
+| `fit_linear` fits with **Theil–Sen** instead of least squares | calibrated constants repeat within ±5%; under OLS they varied by up to four orders of magnitude between identical runs |
+
+The last one was the root cause. Before it, re-running the *same* measurement on *unchanged* code gave anywhere from 18% to 81% error — the model wasn't systematically wrong, it was randomly wrong, so every per-operator "fix" measured before it was tuning noise.
 
 The earlier standalone simulation (`experiments/thesis_prototype.py`, no dependencies) shows a larger 1.81× on an idealized cost model — the gap between the two is exactly why the real library was measured separately.
 
@@ -99,7 +111,7 @@ The earlier standalone simulation (`experiments/thesis_prototype.py`, no depende
 | Persistence: save/open | done |
 | Learned policy, graph/temporal axes, distribution, Rust core | designed, not built |
 
-51 tests: `python3 -m pytest tests/ -q`
+56 tests: `python3 -m pytest tests/ -q`
 
 > **On the Rust core:** [Architecture.md](./Architecture.md) specifies a Rust engine with PyO3 bindings, which is still the right end state. No Rust toolchain exists in this environment, so this is the Python reference implementation of the same architecture — the `BaseIndex` / `Policy` interfaces are what the optimizer depends on, so each engine can be swapped for Tantivy/usearch/roaring without touching the planner.
 
@@ -117,7 +129,7 @@ broccoli/
 │   ├── vector.py        # HNSW + exact path + calibrated recall curve
 │   └── structured.py    # bitmaps + sorted-column ranges
 ├── ranking.py       # RRF, weighted fusion, recency decay
-├── calibration.py   # least-squares fit of base + marginal cost
+├── calibration.py   # robust (Theil-Sen) fit of base + marginal cost
 ├── stats.py         # statistics + query history
 ├── eval.py          # judged-query harness and IR metrics
 ├── query.py         # Query/filters/Plan/Explain

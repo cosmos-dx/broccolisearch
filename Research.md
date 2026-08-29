@@ -125,8 +125,9 @@ The dual nature is a feature: the evaluation harness that validates the paper is
 2. **Cardinality estimation for the approximate side.** Posting lists give good lexical estimates; ANN "how many good neighbors exist" is fuzzier.
 3. **Fusion recall composition.** Estimating the recall of an RRF/weighted fusion of two imperfect candidate sets, cheaply, before running it.
 4. **Learned policy cold-start & drift.** How little history is enough; how to detect workload drift and recalibrate curves.
-5. **Cost of planning itself.** The optimizer must be *much* cheaper than the query it plans; plan enumeration is bounded, but this bound is a research/engineering knob.
+5. **Cost of planning itself.** The optimizer must be *much* cheaper than the query it plans; plan enumeration is bounded, but this bound is a research/engineering knob. *Observed:* on the reference implementation this inverted — planning cost **27× the execution** it was planning for a hybrid query — because estimation called an accidentally O(corpus) property. It is now ~2–4× cheaper than execution on sub-millisecond queries. The threat is real and needs a standing measurement, not a one-off fix.
 6. **Transfer.** Do calibrated curves / learned policies survive a dataset or embedding-model swap (RQ5)?
+7. **Reproducibility of calibration.** Constants fitted from wall-clock timings are themselves random variables. With least-squares fitting, recalibrating an unchanged corpus moved constants by up to four orders of magnitude, which silently moved plan choice. A robust (Theil–Sen) fit contains this, but *how much calibration variance is tolerable before plan choice becomes unstable* is unquantified — and it bounds RQ1/H3.
 
 These are stated up front so the design (SystemDesign.md §5–6) can be judged against them — and so the paper's threats-to-validity section writes itself.
 

@@ -16,7 +16,7 @@ import re
 import time
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from ..calibration import fit_linear
+from ..calibration import TIMING_REPEATS, fit_linear
 from ..types import Budget, Capabilities, CandidateSet, CostEstimate
 from . import BaseIndex
 
@@ -187,7 +187,8 @@ class LexicalIndex(BaseIndex):
         for term in picks:
             # min-of-N: the fastest run is the least contaminated by scheduler
             # noise, so it estimates the true cost better than a mean does.
-            best = min(_time_once(self.search, [term], budget) for _ in range(3))
+            best = min(_time_once(self.search, [term], budget)
+                       for _ in range(TIMING_REPEATS))
             points.append((float(self.df(term)), best))
         if not points:
             return
