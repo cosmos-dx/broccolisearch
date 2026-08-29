@@ -101,6 +101,8 @@ add(doc)
 - Provides posting lists, BM25 scoring, term dictionary (FST), positions for phrase queries.
 - Exposes to the optimizer: **posting-list lengths → cardinality estimates** (lexical cost is fairly deterministic).
 - `estimate()` for a term = f(posting-list length, number of terms, operator AND/OR).
+- **Join order:** with a pushed-down domain, the scan iterates whichever of the posting list and the domain is smaller, and `estimate()` charges `min(df, |domain|)` to match. Dragging a 50k-entry posting list through the interpreter to keep 50 survivors is the same mistake as a database ignoring join order.
+- **Deletes visit the document's terms, not the vocabulary.** Purging a doc id by sweeping every posting list makes one delete cost O(vocabulary); the engine passes the stored document down so it costs O(document length).
 
 ### 4.2 Vector (usearch/HNSW adapter)
 
@@ -116,6 +118,7 @@ add(doc)
 - Range filters → sorted columnar values / BKD-tree-like structure → produce a bitmap of matches.
 - Output: a **bitmap of candidate doc IDs** that other stages can intersect against — the cheap first stage that shrinks the universe.
 - `estimate()` = exact-ish cardinality (bitmaps know their cardinality in O(1)).
+- The planner takes that id set **raw** (`matching_ids`). Wrapping it in a scored `CandidateSet` and converting back to a set materialised two whole-domain structures per query that nothing read — on a filter matching tens of thousands of documents that was one of the largest costs in the entire query path.
 
 ---
 
@@ -193,6 +196,17 @@ each one was added because measurement showed the model was wrong without it:
   featurization, so its cost and cardinality are known. Re-estimating them
   would import avoidable error — including the independence assumption behind
   multiplied selectivities — for no benefit.
+- **A filter's survivors are a domain, not candidates.** Only retrieval stages
+  emit rows to fuse and rank; a filter defines the set they draw *from*. Folding
+  its survivor count into the ranked cardinality charged every filtered plan for
+  ranking the entire surviving corpus — biasing the optimizer against the very
+  push-down it exists to exploit.
+- **Grade the estimate against the same thing it models.** The estimate covers
+  the whole query, `pipeline_ms` included, so the actual it is scored against
+  must be end-to-end latency. `Explain` therefore reports both
+  `actual_latency_ms` (what the caller waited for) and `execution_ms` (the plan
+  alone); comparing the estimate to the latter reported errors the model had
+  not made.
 - **Extrapolate past the calibrated range, never clamp to it.** Beyond the
   measured `ef` ladder, cost grows ~linearly in `ef`; clamping to the widest
   measured point made large budgets look free.
@@ -260,7 +274,7 @@ Operator types:
 - `VectorSearch(ef, domain?)` → ANN candidates + similarities (optionally restricted to bitmap survivors).
 - `Fuse(spec)` → merge candidate sets (RRF/weighted).
 - `Rank(spec)` → final scoring / optional cross-encoder rerank.
-- `TopK(k)` → bounded heap.
+- `TopK(k)` → bounded heap. Literally a heap: `O(n log k)`, not a full `O(n log n)` sort. A filter-only query scores every survivor, so sorting to return ten hits meant ranking the corpus to answer for the page.
 
 Execution respects the plan's ordering (e.g. filter pushed down before vector). Stage stats (`in`, `out`, `latency`) are recorded for explain + history.
 

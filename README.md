@@ -73,20 +73,25 @@ The optimizer matches the best fixed strategy's recall using **1.17× less work*
 
 - The win here is **1.17×, not dramatic**. Filter push-down happens during planning and therefore benefits *every* strategy including the fixed ones, so this workload understates what the optimizer would save in a system where fixed strategies don't get that for free.
 - **Work units, not wall-clock, are the trustworthy metric.** At this scale in Python, latency swings ~15% with run *order* alone (cold caches) — larger than the gap between plans. The latency columns are indicative only.
-- The cost model's estimate error is **~20% median** (`examples/cost_model_error.py`), down from ~85%, and what remains is concentrated in sub-0.05ms operations where interpreter noise dominates. It is calibrated for **ranking plans correctly**, which the tests assert, not for predicting absolute latency.
+- The cost model's estimate error is **~10–15% median** (`examples/cost_model_error.py`), down from ~85%, and what remains is concentrated in sub-0.1ms queries where the fixed per-query cost is most of the total. It is calibrated for **ranking plans correctly**, which the tests assert, not for predicting absolute latency.
 - The workload is synthetic. Running this on judged data (BEIR / MS MARCO) is the next real step.
 
 ### Fixing the cost model was also a speedup
 
-Making the estimates accurate was not just bookkeeping — a wrong cost model was making wrong plans:
+Making the estimates accurate was not just bookkeeping — a wrong cost model was making wrong plans. Measured on the 60-query mixed workload against a clean checkout, the whole run went from **23.1ms to 10.1ms (2.3× faster)**:
 
 | Fix | Effect |
 |---|---|
 | Exact-vs-ANN chosen by **comparing costs** instead of a hardcoded `EXACT_SCAN_MAX = 2048` | filtered queries **3–5× faster** (the threshold kept picking the slower path) |
-| `VectorIndex.n_docs` no longer rebuilds a set of every id on each call | planning **6.4× cheaper**; it had been costing more than execution |
+| Structured filter hands the planner a **raw id set** instead of a `{id: 1.0}` score map it converts back to a set | two whole-domain allocations per filtered query, gone |
+| `top_k` is a **bounded heap** (`O(n log k)`) rather than a full sort | a filter-only query no longer sorts the corpus to return 10 hits |
+| Lexical scan iterates **whichever of posting list and filter domain is smaller** | selective filters stop dragging long posting lists through the interpreter |
+| Vector domain lookup **vectorised**; `VectorIndex.n_docs` no longer rebuilds a set of every id per call | planning went from **27× the cost of execution** to a fraction of it |
 | `fit_linear` fits with **Theil–Sen** instead of least squares | calibrated constants repeat within ±5%; under OLS they varied by up to four orders of magnitude between identical runs |
 
-The last one was the root cause. Before it, re-running the *same* measurement on *unchanged* code gave anywhere from 18% to 81% error — the model wasn't systematically wrong, it was randomly wrong, so every per-operator "fix" measured before it was tuning noise.
+Two of those were found only because the estimates were wrong in a specific, traceable way. A filter's survivors were being counted as candidates to rank, so every filtered plan was priced as if it would rank the whole surviving corpus — the cost model was biased against the exact push-down it exists to exploit. And the reported error itself was inflated by comparing an estimate that includes planning cost against a measured time that excludes it.
+
+The calibration fix was the root cause of the rest. Before it, re-running the *same* measurement on *unchanged* code gave anywhere from 18% to 81% error — the model wasn't systematically wrong, it was randomly wrong, so every per-operator "fix" measured before it was tuning noise.
 
 The earlier standalone simulation (`experiments/thesis_prototype.py`, no dependencies) shows a larger 1.81× on an idealized cost model — the gap between the two is exactly why the real library was measured separately.
 
@@ -111,7 +116,7 @@ The earlier standalone simulation (`experiments/thesis_prototype.py`, no depende
 | Persistence: save/open | done |
 | Learned policy, graph/temporal axes, distribution, Rust core | designed, not built |
 
-56 tests: `python3 -m pytest tests/ -q`
+62 tests: `python3 -m pytest tests/ -q`
 
 > **On the Rust core:** [Architecture.md](./Architecture.md) specifies a Rust engine with PyO3 bindings, which is still the right end state. No Rust toolchain exists in this environment, so this is the Python reference implementation of the same architecture — the `BaseIndex` / `Policy` interfaces are what the optimizer depends on, so each engine can be swapped for Tantivy/usearch/roaring without touching the planner.
 
