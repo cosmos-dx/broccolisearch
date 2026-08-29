@@ -115,12 +115,24 @@ def main():
     idx, centroids = build_index(rng)
     judgments = build_workload(centroids, rng)
 
-    harness = broccoli.Harness(idx, judgments, k=K, recall_target=RECALL_TARGET)
-    reports = harness.compare()
-    print(harness.report(reports=reports))
+    train, test = judgments[::2], judgments[1::2]
 
-    adaptive = next(r for r in reports if r.name.startswith("ADAPTIVE"))
+    harness = broccoli.Harness(idx, test, k=K, recall_target=RECALL_TARGET)
+    reports = harness.compare()
+    learned = broccoli.LearnedPolicy().fit(idx, train, k=K)
+    previous, idx.optimizer.policy = idx.optimizer.policy, learned
+    reports.insert(1, harness.run_strategy("ADAPTIVE (learned)", None))
+    idx.optimizer.policy = previous
+
+    print(harness.report(reports=reports))
+    print(learned.describe())
+
+    adaptive = next(r for r in reports if r.name == "ADAPTIVE (learned)")
+    hedged = next(r for r in reports if r.name.startswith("ADAPTIVE (optim"))
     fixed = [r for r in reports if not r.name.startswith("ADAPTIVE")]
+    print(f"\nrule-based (no judgments) hedges into fusion: {hedged.work:.0f} work "
+          f"units at recall {hedged.recall:.3f}\nlearned (judged) routes per query "
+          f"instead: {adaptive.work:.0f} work units at recall {adaptive.recall:.3f}")
 
     print("NOTE: work units are the trustworthy cost metric here. Wall-clock at "
           "this\n      scale swings ~15% with run ORDER alone (cold caches), "
@@ -145,8 +157,8 @@ def main():
     assert adaptive.recall >= max(r.recall for r in fixed) - 0.02, \
         (f"optimizer gave up too much recall: {adaptive.recall:.3f} vs best fixed "
          f"{max(r.recall for r in fixed):.3f}")
-    print("\nSELF-CHECK PASSED: no fixed strategy matches the optimizer's recall "
-          "at lower cost.\n")
+    print("\nSELF-CHECK PASSED: given judgments, no fixed strategy matches the "
+          "optimizer's\nrecall at lower cost.\n")
 
 
 if __name__ == "__main__":

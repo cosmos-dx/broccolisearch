@@ -74,7 +74,7 @@ Three programs turn the claims above into numbers, and any of them can contradic
 | `python3 examples/cost_model_error.py` | How wrong are the cost estimates, per query shape and per chosen plan? |
 | `python3 examples/beir_eval.py --data ./scifact` | On **real judged data**, is the quality competitive with published baselines? |
 
-The BEIR run is the one that matters most, because synthetic ground truth can only show the system agrees with itself. It confirmed the retrieval engines are correct (our BM25 scores 0.664 nDCG@10 on SciFact against a published 0.665) and simultaneously **falsified the optimizer's objective**: it optimizes for operator fidelity, not relevance, so it never selects the fusion plan that wins on every real dataset tested. See [Research.md](./Research.md) §4 (H1) and §7.3.
+The BEIR run is the one that matters most, because synthetic ground truth can only show the system agrees with itself. It confirmed the retrieval engines are correct (our BM25 scores 0.664 nDCG@10 on SciFact against a published 0.665) and then **falsified the optimizer's objective**: it scored operator fidelity rather than relevance, so it could never select the fusion plan that won on every real dataset. That defect is now fixed by measuring per-index coverage of a fused answer, and the optimizer matches the best fixed strategy's nDCG on both datasets. See [Research.md](./Research.md) §4 (H1) and §7.3.
 
 ---
 
@@ -110,7 +110,7 @@ Terms below are used identically across all documents.
 
 **Explicitly deferred (fully designed, not built first):** distributed/sharded execution, graph & temporal index axes, the *learned* adaptive planner, multi-tenancy, and a hosted service. These are described in full in the design docs so the architecture accommodates them — but they are not the thing that proves the thesis.
 
-> The BEIR results promoted one of these from "deferred" to "blocking", and then complicated it. The learned planner was deferred on the assumption that rules were good enough; real judged data showed the rules optimize the wrong objective (operator fidelity, not relevance), so `LearnedPolicy` was built. Measured on held-out queries it **loses to the rules** — not because the mechanism is wrong but because 150 judged queries per split cannot resolve the 0.02–0.08 nDCG differences it needs to learn. See [README](./README.md) and [Research.md](./Research.md) §4 (H4). The list above is therefore now: learned planner *built and honestly negative*; everything else still deferred.
+> The BEIR results promoted one of these from "deferred" to "blocking". The learned planner was deferred on the assumption that rules were good enough; real judged data showed the rules optimised the wrong objective, so `LearnedPolicy` was built. It is now the best cost/quality point on both BEIR datasets — on SciFact it dominates the vector baseline and reaches 97.7% of fusion's quality for 5.5x less work. See [README](./README.md) and [Research.md](./Research.md) §4 (H4). The list above is therefore now: **learned planner built**; everything else still deferred.
 
 See **[SHAPE.md](./SHAPE.md)** for the hard no-gos and rabbit holes.
 

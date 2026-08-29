@@ -118,7 +118,8 @@ class LearnedPolicy(Policy):
 
     name = "learned"
 
-    DF_EDGES = (1, 8, 64)
+    # Fractions of the corpus, not absolute counts.
+    DF_EDGES = (1e-9, 2e-4, 1e-3, 1e-2, 1e-1)
 
     def __init__(self, fallback: Optional[Policy] = None, min_samples: int = 5,
                  tolerance: float = 0.01):
@@ -136,20 +137,25 @@ class LearnedPolicy(Policy):
 
     @classmethod
     def bucket(cls, features: Dict[str, Any]) -> str:
-        """Log-bucketed document frequency of the rarest query term.
+        """Log-bucketed corpus fraction matched by the rarest query term.
 
         The cheapest available proxy for "can the lexical index answer this on
         its own": a term in a handful of documents is a precise selector, one
-        in half the corpus is not, and a term the corpus has never seen (df 0)
-        means lexical contributes nothing and only the vector side can help.
+        in half the corpus is not, and a term the corpus has never seen means
+        lexical contributes nothing and only the vector side can help.
+
+        Bucketed on the FRACTION of the corpus rather than the raw count, so
+        the same thresholds mean the same thing on a 5k and a 5M document
+        index. With absolute counts every query of a large corpus collapsed
+        into one bucket and the policy had nothing left to route on.
         """
         if not features.get("has_text"):
             return "no_text"
-        df = features.get("min_df") or 0
+        ratio = features.get("min_df_ratio") or 0.0
         for edge in cls.DF_EDGES:
-            if df < edge:
-                return f"min_df<{edge}"
-        return f"min_df>={cls.DF_EDGES[-1]}"
+            if ratio < edge:
+                return f"df/N<{edge:g}"
+        return f"df/N>={cls.DF_EDGES[-1]:g}"
 
     def fit(self, index, judgments, k: int = 10,
             strategies: Sequence[str] = ("lexical", "vector", "hybrid_rrf"),
@@ -318,6 +324,11 @@ class Optimizer:
             "n_terms": len(ctx.terms),
             "min_df": min(dfs) if dfs else 0,
             "max_df": max(dfs) if dfs else 0,
+            # Relative to the corpus, because a term in 50 documents is common
+            # in a 5k corpus and rare in a 50k one. Bucketing on the absolute
+            # count put every query of a large corpus in one bucket, which left
+            # a learned policy nothing to route on.
+            "min_df_ratio": (min(dfs) / n_docs) if (dfs and n_docs) else 0.0,
             "selectivity": round(ctx.selectivity, 4),
             "k": query.k,
             "recall_target": query.recall_target,

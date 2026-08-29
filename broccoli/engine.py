@@ -19,7 +19,7 @@ from . import ranking
 from .calibration import TIMING_REPEATS, fit_linear
 from .execution import Executor
 from .indexes import LexicalIndex, StructuredIndex, VectorIndex
-from .optimizer import Optimizer, Policy, RuleBasedPolicy
+from .optimizer import OVERFETCH, Optimizer, Policy, RuleBasedPolicy
 from .query import (Eq, Explain, Hit, OneOf, Predicate, Query, Range, Results,
                     normalize_where, parse_duration)
 from .schema import STRUCTURED_KINDS, Schema, to_timestamp

@@ -59,21 +59,27 @@ Measured on a 50k-document mixed workload (keyword / semantic / filtered queries
 ```
 strategy                 recall     nDCG     MRR        work    target
 ----------------------------------------------------------------------
-ADAPTIVE (optimizer)      1.000    1.000   1.000        8200      yes
+ADAPTIVE (optimizer)      1.000    1.000   1.000        9607      yes
+ADAPTIVE (learned)        1.000    1.000   1.000        8200      yes
 lexical                   0.400    0.451   0.667        3377       NO
 vector                    1.000    1.000   1.000        9583      yes
 hybrid_rrf                1.000    1.000   1.000        9607      yes
-
-work-at-fixed-recall: adaptive 8200 units vs best fixed (vector) 9583 → 1.17x
 ```
 
-The optimizer matches the best fixed strategy's recall using **1.17× less work**, and it does so *without being told which strategy to use* — routing to `lexical` for the keyword queries and `vector`/`hybrid_rrf` for the semantic and filtered ones, deterministically. `lexical` alone is cheapest but fails the recall bar; the two vector strategies hit recall but overpay on queries that never needed a vector search.
+The learned optimizer matches the best fixed strategy's recall using **1.17× less work** (8200 vs 9583), *without being told which strategy to use* — it routes to `lexical` on the queries whose terms are selective enough to answer alone, and to `vector` on the rest. `lexical` alone is cheapest but fails the recall bar; the two vector strategies hit recall but overpay on queries that never needed a vector search.
+
+The two adaptive rows are the interesting part, and they say something the earlier version of this README got wrong:
+
+- **`ADAPTIVE (optimizer)`** has no judgments. It can measure that its two indexes return different documents, but not whether that difference *matters* — so it hedges and fuses, spending 9607.
+- **`ADAPTIVE (learned)`** is trained on half the judged queries and scored on the other half. It measures that on this corpus the lexical index alone is perfect for one class of query and useless for another, and routes accordingly for 8200.
+
+That gap is the honest price of not having relevance labels, and it is why `Policy` is a swappable interface rather than a fixed rule.
 
 **Honest caveats**, because the project's own rules require a measured number with its limits stated:
 
-- The win here is **1.17×, not dramatic**. Filter push-down happens during planning and therefore benefits *every* strategy including the fixed ones, so this workload understates what the optimizer would save in a system where fixed strategies don't get that for free.
+- The win is **1.17×, not dramatic**, and it needs judgments. Filter push-down happens during planning and therefore benefits *every* strategy including the fixed ones, so this workload understates what the optimizer would save in a system where fixed strategies don't get that for free.
 - **Work units, not wall-clock, are the trustworthy metric.** At this scale in Python, latency swings ~15% with run *order* alone (cold caches) — larger than the gap between plans. The latency columns are indicative only.
-- The cost model's estimate error is **~10–15% median** (`examples/cost_model_error.py`), down from ~85%, and what remains is concentrated in sub-0.1ms queries where the fixed per-query cost is most of the total. It is calibrated for **ranking plans correctly**, which the tests assert, not for predicting absolute latency.
+- The cost model's estimate error is **~25% median** (`examples/cost_model_error.py`), concentrated in sub-0.05ms queries where fixed per-query cost is most of the total. It is calibrated for **ranking plans correctly**, which the tests assert, not for predicting absolute latency. See the error section below — the previously advertised "10–15%" was a measurement artifact, not a better model.
 - This particular workload is synthetic. See below for what happened on real judged data — it is not the same story.
 
 ### Fixing the cost model was also a speedup
@@ -91,7 +97,23 @@ Making the estimates accurate was not just bookkeeping — a wrong cost model wa
 
 Two of those were found only because the estimates were wrong in a specific, traceable way. A filter's survivors were being counted as candidates to rank, so every filtered plan was priced as if it would rank the whole surviving corpus — the cost model was biased against the exact push-down it exists to exploit. And the reported error itself was inflated by comparing an estimate that includes planning cost against a measured time that excludes it.
 
-The calibration fix was the root cause of the rest. Before it, re-running the *same* measurement on *unchanged* code gave anywhere from 18% to 81% error — the model wasn't systematically wrong, it was randomly wrong, so every per-operator "fix" measured before it was tuning noise.
+### The error measurement was lying, and fixing it mattered more than any model change
+
+This README previously advertised **~10–15% median** cost-model error. That number was not reproducible. Running the unchanged harness on unchanged code produced 12.7%, 24.4%, 27.4% and 40.5% on four consecutive runs — the quoted figure was the luckiest draw from a wide distribution, and every "improvement" measured against it was unfalsifiable.
+
+The variance was not timing noise. Holding calibration fixed and re-measuring three times gave 20.0%, 21.4%, 22.5% — stable. Re-*calibrating* the identical corpus moved the error by 6+ points and swung `pipeline_ms` by 2x. **Calibration was the variable, not the model.** Three real bugs came out of that:
+
+| Bug | Effect |
+|---|---|
+| `ranking.calibrate` timed fusion and top-k **once each**, with no warm-up and no min-of-N — the only calibrator in the library that did | its constants are charged against every candidate a hybrid plan fuses, so one unlucky sample moved a hybrid estimate by tens of percent. Fixing it took overall error **35.9% → 21.2%** and hybrid **50.1% → 19.4%** |
+| `pipeline_ms` was computed as `min(total − execution)` per run, subtracting two nearly-equal noisy timers and keeping the unluckiest pair | minimising each quantity separately removed most of the 2x swing |
+| The pipeline probe walked k up to 100 using an arbitrary term that matched only 50 documents, so the curve flattened where it should have risen | the fit flipped between "all fixed cost" and "all per-hit cost" run to run. Probing with the most common term identified the slope consistently |
+
+Two modelling errors were fixed alongside them: result marshalling is O(k) and was priced as a constant, and it is O(*hits returned*) rather than O(k), so a `k=200` query against a 50-document term was being charged four times over.
+
+The harness itself now reports across **independent calibrations** and varies `k` across the workload, because a fixed-k workload cannot distinguish a per-hit cost from a constant and scores that entire term as correct no matter what it is.
+
+Current honest number: **24.7% median**, worst on sub-0.05ms keyword queries (49%) where fixed overhead is nearly the whole latency, best on vector plans (11.8%). That is higher than the number this file used to claim and lower than the truth behind it.
 
 The earlier standalone simulation (`experiments/thesis_prototype.py`, no dependencies) shows a larger 1.81× on an idealized cost model — the gap between the two is exactly why the real library was measured separately.
 
@@ -108,41 +130,49 @@ Synthetic ground truth can only prove the system is self-consistent, so the same
 | SciFact (5,183 docs / 300 queries) | **0.664** | 0.665 |
 | NFCorpus (3,633 docs / 323 queries) | **0.318** | 0.325 |
 
-**The optimizer's objective is wrong, and real data is what exposed it.** On both datasets it picks a cheap plan and leaves relevance on the table:
+**Real data exposed a defect in the optimizer's objective, which is now fixed.** Originally the optimizer scored 0.647 nDCG on SciFact while `hybrid_rrf` scored 0.693, and it *never chose fusion at any recall target*. That was not a tuning problem but a definitional one:
+
+> The cost model's `recall` meant **operator fidelity** — did the ANN return the true nearest neighbours — not **relevance**. An exact vector scan honestly reports 1.0, so no plan could ever outrank it, even though fusing with BM25 retrieves *different* relevant documents that vector search alone never sees.
+
+The fix is to measure what one index misses. At calibration time, `Index._measure_index_agreement` samples documents as queries, runs the fusion, and records what fraction of the fused top-k each index would have returned alone. No relevance judgments are needed — the indexes' own disagreement supplies the signal. Measured coverage is ~0.67 per index on SciFact and ~0.57 on NFCorpus, so a single-index plan is now correctly priced as *incomplete* and fusion can win.
+
+The result is that `recall` became a real dial instead of an inert argument. On SciFact:
 
 ```
-scifact                 nDCG@10     work        nfcorpus            nDCG@10     work
-ADAPTIVE (optimizer)      0.647      843        ADAPTIVE              0.319      619
-lexical                   0.664     3599        lexical               0.318      600
-vector                    0.644      850        vector                0.314      850
-hybrid_rrf                0.693     4435        hybrid_rrf            0.346     1439
+recall=   nDCG@10    work   plan mix
+  0.30     0.6751     842   lexical=2  vector=188
+  0.50     0.6751     842   lexical=2  vector=188
+  0.70     0.6910    4617   hybrid_rrf=190
+  0.90     0.6910    4617   hybrid_rrf=190
 ```
 
-`hybrid_rrf` is the best strategy on both (+0.046 and +0.027 nDCG) and the optimizer **never chooses it**. This is not a tuning problem, it is a definitional one:
+Below the measured coverage the optimizer buys the cheap single-index plan; above it, it pays for fusion. Before the fix this curve was flat — every target returned the vector plan. At the default `recall=0.9` the optimizer now matches `hybrid_rrf` exactly (0.691 on SciFact, 0.313 on NFCorpus), so **no quality is left on the table**.
 
-> The cost model's `recall` means **operator fidelity** — did the ANN return the true nearest neighbours — not **relevance**. An exact vector scan honestly reports recall 1.0, so no plan can ever outrank it, even though fusing with BM25 retrieves *different* relevant documents that vector search alone never sees.
+What it does *not* buy is a free lunch. Reaching fusion's quality costs fusion's work, because on a homogeneous workload there is nothing to route — every SciFact query is the same shape. Per-query routing is what H1 predicts a win from, and it needs a *mixed* workload, which these datasets are not.
 
-The synthetic workload hid this because its relevant documents were constructed so that a single index could find all of them; union recall and relevance coincided. On real data they come apart. Estimating what fusion adds requires knowing which index's notion of similarity matches *this* corpus's judgments — which is not derivable from index statistics and is exactly the job of the unbuilt `LearnedPolicy` ([Research.md](./Research.md) §7, open problem 3).
+### The learned policy: built, and it finds the best value point
 
-### The learned policy: built, and it does not help yet
+`LearnedPolicy` (`broccoli/optimizer.py`) runs each plan shape over judged training queries, records the nDCG each actually achieved bucketed by the **fraction of the corpus** the rarest query term matches, and at query time picks the **cheapest plan not measurably worse than the best** — where "measurably" means the gap survives both a tolerance and two standard errors of the *paired* per-query difference. Pairing matters: query difficulty dominates nDCG variance and is common to both plans, so it cancels in the difference and makes gaps detectable on a few hundred queries that are invisible in either plan's absolute mean.
 
-`LearnedPolicy` is now implemented (`broccoli/optimizer.py`). It runs each plan shape over judged training queries, records the nDCG each actually achieved bucketed by the rarest query term's document frequency, and at query time picks the **cheapest plan not measurably worse than the best** — where "measurably" means the gap survives both a tolerance and two standard errors of the *paired* per-query difference.
+Trained on half of each dataset and scored on the held-out half:
 
-Trained on half of each dataset and scored on the held-out half, **it loses to the rule-based policy it was meant to replace**:
+| | scifact nDCG@10 | work | | nfcorpus nDCG@10 | work |
+|---|---|---|---|---|---|
+| ADAPTIVE (rules) | 0.691 | 4617 | | 0.313 | 1479 |
+| **ADAPTIVE (learned)** | **0.675** | **842** | | **0.297** | **646** |
+| lexical | 0.649 | 3782 | | 0.282 | 641 |
+| vector | 0.673 | 850 | | 0.291 | 850 |
+| hybrid_rrf | 0.691 | 4617 | | 0.313 | 1479 |
 
-| scifact (150 held-out) | nDCG@10 | work | | nfcorpus (162 held-out) | nDCG@10 | work |
-|---|---|---|---|---|---|---|
-| ADAPTIVE (rules) | **0.675** | 842 | | ADAPTIVE (rules) | **0.293** | 636 |
-| ADAPTIVE (learned) | 0.658 | 3024 | | ADAPTIVE (learned) | 0.284 | 588 |
-| hybrid_rrf | 0.691 | 4617 | | hybrid_rrf | 0.314 | 1479 |
+On SciFact the learned policy **dominates the vector baseline outright** — better nDCG (0.675 vs 0.673) for less work (842 vs 850) — and reaches 97.7% of fusion's quality for **5.5× less work**. It gets there by learning per bucket that, for example, queries whose rarest term matches under 0.1% of the corpus are answered as well by lexical alone as by fusion, while queries in the 0.1–1% band genuinely need fusing.
 
-The mechanism works; the estimates don't transfer. With ~150 training queries split across buckets, the per-plan quality differences it is trying to learn (0.02–0.08 nDCG) are the same size as the standard error on them. Concretely, the vector plan trains at 0.62 nDCG on SciFact and tests at 0.673 — the training split simply happened to contain harder vector queries. Learning from a bucketed mean cannot outrun that, and the significance test correctly refuses to act on most of the gaps, which leaves the policy close to a coin flip.
+Getting here took three failed attempts, which is worth recording because two of them looked reasonable:
 
-Two things this does *not* mean. It is not evidence that a learned policy can't work — it is evidence that **this** amount of judged data can't support **this** estimator. And it does not rescue the rule-based policy's objective: fusion still wins on quality on both datasets, so the defect above stands.
+1. **Learning recall@k** — picks fusion everywhere. Fusion retrieves strictly more relevant documents, so a recall-maximising policy always fuses and pays 5x for it.
+2. **Learning nDCG with absolute-count buckets** — lost to the rules (0.658 vs 0.675). A bucket boundary of "50 documents" means *selective* in a 5k corpus and *common* in a 50k one, so on larger corpora every query collapsed into one bucket and there was nothing left to route on. Switching to corpus **fraction** fixed it.
+3. **Learning unpaired means** — the differences being learned (0.02–0.08 nDCG) are the same size as their standard error at ~150 training queries, so the estimates did not transfer across splits.
 
-What would actually be needed, in order of expected value: many more judged queries (MS MARCO has ~500k, not 300); a feature that genuinely separates "the cheap plan suffices" from "fusion is required", which `min_df` demonstrably is not; and learning from click feedback through the existing `observe` hook, so the training set grows with traffic instead of being capped by a static qrels file.
-
-Three approaches were tried (learning recall, learning nDCG, learning paired nDCG differences) and all three lost to the rules. That is reported rather than tuned away, because the fourth attempt would have been fitting to the test split.
+The remaining honest limit: it still gives up ~0.016 nDCG to full fusion, and it needs judgments. The next real test is MS MARCO, where judged queries are ~1000x more plentiful and the buckets would not be data-starved.
 
 Reproduce it:
 
@@ -172,8 +202,8 @@ PYTHONPATH=. python3 examples/beir_eval.py --data ./scifact
 | Evaluation harness: recall@k, nDCG, MRR, work/latency-at-fixed-recall | done |
 | BEIR runner on real judged data (`examples/beir_eval.py`) | done |
 | Persistence: save/open | done |
-| `LearnedPolicy`: measured relevance per query bucket, paired significance test | built — **does not beat the rules on the data tested** (above) |
-| Relevance-aware cost model (vs. today's operator-fidelity recall) | **not built — known defect, see BEIR results above** |
+| `LearnedPolicy`: measured relevance per query bucket, paired significance test | done |
+| Relevance-aware cost model: measured per-index coverage of a fused answer | done |
 | Graph/temporal axes, distribution, Rust core | designed, not built |
 
 62 tests: `python3 -m pytest tests/ -q`
@@ -218,12 +248,13 @@ Start with **[document.md](./document.md)** (master index + glossary).
 
 ## Next steps
 
-- [x] Run the harness on judged data (BEIR) instead of synthetic ground truth — done, and it found a real defect in the optimizer's objective (above).
-- [ ] **Teach the cost model that relevance ≠ operator fidelity.** This is now the top priority, because it is the one thing standing between the optimizer and the best strategy on every real dataset tested.
-- [x] `LearnedPolicy` — built, and honestly reported as not yet beating the rules (above).
-- [ ] Train the policy on **MS MARCO** (~500k judged queries rather than 300) to separate "this estimator is too weak" from "this dataset is too small". This is the experiment that decides whether the learned direction is worth keeping.
-- [ ] Find a query feature that actually predicts when fusion is required; `min_df` does not.
-- [ ] Port the engines to Rust behind the same interfaces (Tantivy / usearch / roaring).
+- [x] Run the harness on judged data (BEIR) instead of synthetic ground truth — done, and it found a real defect in the optimizer's objective.
+- [x] **Teach the cost model that relevance ≠ operator fidelity** — done via measured per-index coverage; `recall` is now a working dial.
+- [x] `LearnedPolicy` — built, and now the best value point on both BEIR datasets.
+- [ ] Train the policy on **MS MARCO** (~500k judged queries rather than 300), where the buckets would not be data-starved.
+- [ ] **Validate filter push-down on real data.** Still open and still the largest untested claim: it is the mechanism the design leans on hardest, and neither SciFact nor NFCorpus ships usable metadata (their `metadata` fields are empty or a bare URL). Needs a judged corpus with real structured fields — TREC-COVID has `publish_time`.
+- [ ] Drive the sub-0.05ms error down, or conclude it is a Python floor and say so. It is 49% on keyword queries versus 12% on vector plans.
+- [ ] Port the engines to Rust behind the same interfaces (Tantivy / usearch / roaring). See [Architecture.md §6.1](./Architecture.md) for why not Go.
 
 ## License
 

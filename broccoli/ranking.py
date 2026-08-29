@@ -99,6 +99,7 @@ def calibrate(sizes: Sequence[int] = (256, 1024, 4096)) -> tuple:
     share of query time to matter to plan choice.
     """
     import time
+    from functools import partial
 
     from .calibration import TIMING_REPEATS
 
@@ -125,8 +126,8 @@ def calibrate(sizes: Sequence[int] = (256, 1024, 4096)) -> tuple:
         a = CandidateSet(source="a", scores={i: float(n - i) for i in range(n)})
         b = CandidateSet(source="b", scores={i: float(i) for i in range(n // 2, n)})
         fused = rrf([a, b])
-        fusion.append(per_doc(lambda: rrf([a, b]), n))
-        rank.append(per_doc(lambda: top_k(fused, 50), n))
+        fusion.append(per_doc(partial(rrf, [a, b]), n))
+        rank.append(per_doc(partial(top_k, fused, 50), n))
     fusion.sort()
     rank.sort()
     return fusion[len(fusion) // 2], rank[len(rank) // 2]

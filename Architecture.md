@@ -225,6 +225,22 @@ Step 8 closes the loop: actual vs. estimated cost is logged, which is the traini
 
 See **Approach.md** for the reuse ladder that produced these choices.
 
+### 6.1 Why not Go?
+
+Go is a reasonable question for this system and worth answering explicitly rather than by omission, because it beats Rust on the two things this project has actually spent its time on: build/iterate speed, and how quickly a contributor can get productive. The optimizer — the part that carries the whole thesis — is ordinary business logic over statistics, and Go would express it just as well.
+
+The decision goes the other way for one reason that is specific to this project rather than a general preference:
+
+| | Rust | Go |
+|---|---|---|
+| Lexical / vector / bitmap engines | Tantivy, usearch, roaring — mature, and the ones this design explicitly rents rather than writes | Bluge (a Bleve fork, less active), no first-class HNSW; more of the engine becomes ours to build and maintain |
+| Cost of a mistake in the hot loop | bounds-checked, no GC pauses in a p99 latency budget | GC pauses land exactly in the tail latency this project's headline metric measures |
+| Python bindings | PyO3, ergonomic and coarse-grained | cgo, which is a real tax at the boundary |
+
+The **[Approach.md](./Approach.md) reuse ladder is what decides this**: the directive is "rent the indexes, own the planner". Rust is where the rentable indexes live. Choosing Go would mean writing more of the layer this project deliberately refuses to write, to save effort on the layer it actually cares about — backwards.
+
+Two things worth being honest about. First, none of this is why the current implementation is Python: that is a reference implementation, chosen because no Rust toolchain exists in this environment, and it is where every measured result in the README comes from. Second, **if the port ever happens, the language matters far less than the interfaces** — `BaseIndex` and `Policy` are what the optimizer depends on. A Go core behind the same two interfaces would be a worse fit for the reasons above, not an incorrect one, and the optimizer would not know the difference.
+
 ---
 
 ## 7. What is deliberately *not* here (yet), and where it will slot in

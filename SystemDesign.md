@@ -211,11 +211,31 @@ each one was added because measurement showed the model was wrong without it:
   measured `ef` ladder, cost grows ~linearly in `ef`; clamping to the widest
   measured point made large budgets look free.
 
-A constant `pipeline_ms` (planning, query resolution, building `Results`) is
-added to every plan. Being identical across candidates it cannot change which
-plan wins; it exists so `latency_budget_ms` is compared against an honest
-number. It is measured once at calibration — deliberately *not* learned from
-live traffic, which would make query N's plan depend on query N−1.
+- **Fidelity is not relevance.** Each index's `recall` reports how faithfully it
+  computed *its own* similarity function; an exact vector scan scores 1.0 by
+  definition. Priced that way no plan can outrank a single exact index, so
+  fusion was unreachable at any recall target — on BEIR the optimizer left
+  0.02–0.05 nDCG on the table. `Optimizer.solo_coverage[op]` is the measured
+  fraction of a *fused* answer that index recovers alone, and multiplies the
+  single-index case. It is measured without judgments
+  (`Index._measure_index_agreement`): sample documents as queries, fuse, and see
+  what each index would have returned by itself. Measure against the **fused
+  result**, not raw index-vs-index overlap — raw disagreement cannot separate
+  "complementary" from "one of them is wrong", and scoring it that way made the
+  planner fuse everything on a corpus where one index was already perfect.
+
+The out-of-index cost (planning, query resolution, building `Results`) is added
+to every plan. Being identical across candidates for a given query it cannot
+change which plan wins; it exists so `latency_budget_ms` is compared against an
+honest number. It is measured once at calibration — deliberately *not* learned
+from live traffic, which would make query N's plan depend on query N−1.
+
+It is a **line, not a constant**: marshalling into `Hit` objects is O(results),
+so the model is `pipeline_ms + min(k, n_results) * pipeline_ms_per_hit`. Both
+halves of that were wrong at first and each cost real accuracy — charging a
+constant under-priced large-k queries by ~35%, and then charging for `k` rather
+than for rows actually returned over-charged a `k=200` query against a
+50-document term fourfold.
 
 #### 6.4.1 Calibration
 
@@ -233,10 +253,36 @@ all of which cost us real accuracy before they were adopted:
    so ordinary least squares chases outliers. `fit_linear` uses Theil–Sen
    (median of pairwise slopes) over min-of-N samples per point.
 
+4. **Every timed quantity uses warm-up plus min-of-N.** No exceptions — the one
+   calibrator that timed its operations once each (`ranking.calibrate`, for
+   fusion and top-k cost) charged its result against every candidate a hybrid
+   plan fuses, so a single unlucky sample moved hybrid estimates by tens of
+   percent. Fixing that one omission took overall cost-model error from 35.9%
+   to 21.2%, and hybrid queries from 50.1% to 19.4%.
+5. **Never fit a difference of two noisy timers.** The pipeline constant was
+   derived as `min(total − execution)` per run, which keeps whichever run had
+   the unluckiest *pair* and swung the constant 2x between calibrations of an
+   identical corpus. Minimise each quantity separately, then subtract; `total ≥
+   execution` holds per run, so the result stays non-negative.
+6. **Make sure the probe can actually span the range you fit over.** The
+   pipeline probe walked `k` up to 100 using a term matching only 50 documents,
+   so the curve flattened where the model needed it to rise and the fit flipped
+   between "all fixed cost" and "all per-hit cost" run to run. Probing with the
+   most common term identifies the slope consistently.
+
 The third rule mattered most. Under OLS, repeated calibration of an unchanged
 corpus produced constants varying by up to **four orders of magnitude**, so
 plan choice moved for reasons unrelated to the query. Under Theil–Sen the same
 constants repeat within ~±5%.
+
+Rules 4–6 were found only after the *measurement* was fixed, and that is the
+transferable lesson: for a long time the error harness reported a single
+build's number, which ranged from 12.7% to 40.5% on unchanged code. Holding
+calibration fixed and re-measuring was stable to ±1.3 points, so the variance
+was calibration, not timing. Any per-operator "fix" evaluated against a single
+build was tuning noise. The harness now reports across independent
+calibrations, and varies `k`, since a fixed-`k` workload cannot tell a per-hit
+cost from a constant and scores that term correct no matter what it holds.
 
 #### 6.4.2 Exact vs approximate is itself a cost decision
 
@@ -253,9 +299,11 @@ faster** once the cost model made the call instead.
 ### 6.5 Policy: rule-based now, learned later
 
 - **`RuleBasedPolicy` (v1):** applies the cost model + a small set of hand-tuned thresholds (filter-first when selectivity < X; skip vector when query is all rare terms; etc.). Debuggable, deterministic.
-- **`LearnedPolicy` (later):** consumes the query-history log; learns which plan/budget minimizes actual latency-at-fixed-recall per query class. Same `Policy` interface → drop-in. Cold-start falls back to rules.
+- **`LearnedPolicy` (built):** consumes judged queries; learns the nDCG each plan shape actually achieved per query class, bucketed by the fraction of the corpus the rarest query term matches, and picks the cheapest plan not measurably worse than the best. Same `Policy` interface → drop-in. Cold-start falls back to rules.
 
-> **`ponytail:`** v1 does NOT learn. The learned planner is fully designed and the history loop is wired, but we prove the thesis with rules first. Ceiling of rules: hand-tuned thresholds generalize imperfectly; upgrade path = LearnedPolicy on logged history.
+  Two design points earned by failed attempts. Buckets are corpus **fractions**, not absolute document counts, because "a term in 50 documents" means selective on a 5k corpus and common on a 50k one — with absolute edges, every query on a large corpus fell into one bucket and there was nothing to route on. And plans are compared by the **paired** per-query nDCG difference rather than by their separate means: query difficulty dominates nDCG variance and is common to both plans, so pairing cancels it and exposes gaps that are invisible otherwise at a few hundred judged queries.
+
+> **`ponytail:`** the rules remain the default and the cold-start path; `LearnedPolicy` is opt-in because it requires judgments. Ceiling of rules: with no labels they cannot tell "these indexes disagree because they are complementary" from "...because one is wrong", so they hedge into fusion. Upgrade path = `LearnedPolicy`, or the same estimator trained from click feedback arriving through `observe`, which needs no qrels file.
 
 ### 6.6 Explain
 

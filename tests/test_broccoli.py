@@ -513,7 +513,7 @@ def test_recall_target_actually_changes_the_chosen_plan(index, corpus):
 
 def _learned_ctx():
     ctx = QueryContext(query=Query(text="x", recall_target=0.9))
-    ctx.features = {"has_text": True, "min_df": 4}
+    ctx.features = {"has_text": True, "min_df_ratio": 5e-4}
     return ctx
 
 
@@ -548,7 +548,7 @@ def test_learned_policy_pays_for_a_quality_gap_that_survives_its_error():
 def test_untrained_learned_policy_defers_to_the_rules():
     """No evidence must mean 'use the old objective', never 'guess'."""
     ctx = QueryContext(query=Query(text="x", recall_target=0.9))
-    ctx.features = {"has_text": True, "min_df": 4}
+    ctx.features = {"has_text": True, "min_df_ratio": 5e-4}
     plans = [_plan("vector", 50.0, 0.95), _plan("hybrid_rrf", 5.0, 0.95)]
     assert broccoli.LearnedPolicy().choose(plans, ctx).name == "hybrid_rrf"
 
