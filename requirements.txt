@@ -1,0 +1,9 @@
+# Core (required)
+numpy>=1.21
+
+# Rented ANN engine. Optional: without it the vector index still works, exactly
+# but exhaustively, so the library degrades in speed rather than breaking.
+hnswlib>=0.7
+
+# Tests
+pytest>=7
