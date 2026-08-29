@@ -14,9 +14,12 @@ The two ideas that make this different from a rule-based search planner:
 
 from __future__ import annotations
 
+import math
+import statistics
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from itertools import combinations
 from typing import Any, Dict, List, Optional, Sequence, Set
 
 from .indexes import LexicalIndex, StructuredIndex, VectorIndex
@@ -122,6 +125,8 @@ class LearnedPolicy(Policy):
         # bucket -> plan name -> mean quality achieved on the training queries
         self.coverage: Dict[str, Dict[str, float]] = {}
         self.support: Dict[str, int] = {}      # bucket -> training queries
+        # (bucket, plan_a, plan_b) -> standard error of their paired difference
+        self.delta_se: Dict[Any, float] = {}
         self.fallback = fallback or RuleBasedPolicy()
         self.min_samples = min_samples
         # How much quality a plan may give up to be preferred for being cheaper.
@@ -162,16 +167,14 @@ class LearnedPolicy(Policy):
         """
         from .eval import ndcg_at_k         # local: eval imports nothing from here
         score = metric or (lambda ids, j: ndcg_at_k(ids, j.relevant, k))
-
-        totals: Dict[str, Dict[str, List[float]]] = {}
-        # Probe queries are calibration traffic, not user traffic; letting them
-        # into the history would bias every statistic read off it later.
+        rows: Dict[str, List[Dict[str, float]]] = {}
         history = list(index.stats.history)
         try:
             for judgment in judgments:
-                relevant = judgment.relevant_set
-                if not relevant:
+                if not judgment.relevant_set:
                     continue
+                row: Dict[str, float] = {}
+                bucket = None
                 for strategy in strategies:
                     kwargs = dict(judgment.query)
                     kwargs["k"] = k
@@ -184,20 +187,33 @@ class LearnedPolicy(Policy):
                     # so training buckets come from the same featurize() the
                     # optimizer will call at query time.
                     bucket = self.bucket(index.stats.history[-1].features)
-                    slot = totals.setdefault(bucket, {}).setdefault(strategy, [])
-                    slot.append(score(results.ids, judgment))
+                    row[strategy] = score(results.ids, judgment)
+                if bucket is not None and row:
+                    rows.setdefault(bucket, []).append(row)
         finally:
             index.stats.history = history
 
-        self.coverage = {
-            bucket: {name: sum(scores) / len(scores)
-                     for name, scores in plans.items()
-                     if len(scores) >= self.min_samples}
-            for bucket, plans in totals.items()
-        }
-        self.coverage = {b: p for b, p in self.coverage.items() if p}
-        self.support = {b: max((len(s) for s in plans.values()), default=0)
-                        for b, plans in totals.items()}
+        self.coverage, self.delta_se, self.support = {}, {}, {}
+        for bucket, bucket_rows in rows.items():
+            # Complete cases only, so every mean and every difference below is
+            # computed over the identical set of queries.
+            complete = [r for r in bucket_rows
+                        if all(s in r for s in strategies)]
+            if len(complete) < self.min_samples:
+                continue
+            n = len(complete)
+            self.support[bucket] = n
+            self.coverage[bucket] = {
+                s: sum(r[s] for r in complete) / n for s in strategies}
+            # Per-query PAIRED differences. Query difficulty is the dominant
+            # source of variance in nDCG and it is common to both plans, so it
+            # cancels here: the difference between two plans is measurable on a
+            # few hundred queries even when neither plan's absolute mean is.
+            for a, b in combinations(strategies, 2):
+                diffs = [r[a] - r[b] for r in complete]
+                se = (statistics.stdev(diffs) / math.sqrt(n)) if n > 1 else 0.0
+                self.delta_se[(bucket, a, b)] = se
+                self.delta_se[(bucket, b, a)] = se
         return self
 
     def choose(self, candidates: Sequence[Plan], ctx: QueryContext) -> Plan:
@@ -214,9 +230,20 @@ class LearnedPolicy(Policy):
         # the argmax instead would always fuse: fusion nearly always wins by a
         # hair, and paying 5x the work for a hair is the failure this policy is
         # supposed to fix, not a different flavour of it.
-        best = max(learned[p.name] for p in known)
-        good_enough = [p for p in known
-                       if learned[p.name] >= best - self.tolerance]
+        #
+        # "Measurably" is doing real work. A plan is only rejected if it trails
+        # the leader by more than the tolerance AND by more than two standard
+        # errors of the PAIRED difference between them. Without the second test
+        # the policy chases sampling noise: on a few hundred judged queries the
+        # gaps between plans are routinely smaller than the error on the gaps.
+        bucket = self.bucket(ctx.features)
+        leader = max(known, key=lambda p: learned[p.name])
+        good_enough = []
+        for plan in known:
+            shortfall = learned[leader.name] - learned[plan.name]
+            noise = 2.0 * self.delta_se.get((bucket, leader.name, plan.name), 0.0)
+            if shortfall <= max(self.tolerance, noise):
+                good_enough.append(plan)
         return min(good_enough, key=lambda p: p.estimate.latency_ms)
 
     def describe(self) -> str:
@@ -225,11 +252,20 @@ class LearnedPolicy(Policy):
         lines = ["learned policy: measured quality by query bucket"]
         for bucket in sorted(self.coverage):
             plans = self.coverage[bucket]
-            best = max(plans, key=plans.get)
-            body = "  ".join(f"{n}={v:.3f}" for n, v in sorted(plans.items()))
+            leader = max(plans, key=plans.get)
+            body = "  ".join(
+                f"{n}={v:.3f}{'' if n == leader else self._sig(bucket, leader, n, v, plans[leader])}"
+                for n, v in sorted(plans.items()))
             lines.append(f"  {bucket:<14} n={self.support.get(bucket, 0):<4} "
-                         f"{body}   -> prefers {best}")
+                         f"{body}   -> best {leader}")
+        lines.append("  (* = trails the leader by more than 2 standard errors "
+                     "of the paired difference)")
         return "\n".join(lines)
+
+    def _sig(self, bucket: str, leader: str, name: str,
+             value: float, best: float) -> str:
+        se = self.delta_se.get((bucket, leader, name), 0.0)
+        return "*" if (best - value) > max(self.tolerance, 2.0 * se) else " "
 
 
 # ------------------------------- optimizer --------------------------------- #

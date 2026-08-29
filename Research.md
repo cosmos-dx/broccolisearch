@@ -74,6 +74,8 @@ where \(\widehat{L}\) composes operator latencies and \(\widehat{R}\) composes s
 - **H3:** Offline-calibrated recall/latency curves are **accurate enough** for the optimizer to hit recall targets within a small tolerance (RQ1).
 - **H4:** A learned policy improves over rules **primarily on tail/ambiguous query classes**, not on clear-cut ones (RQ4).
 
+  > **Status: not supported at this data scale.** `LearnedPolicy` is built and measured (README). Trained on half of SciFact/NFCorpus and scored on the held-out half it *loses* to `RuleBasedPolicy` (0.658 vs 0.675 and 0.284 vs 0.293 nDCG@10). The failure is diagnosed rather than mysterious: the per-bucket quality differences being learned (0.02–0.08 nDCG) are the same magnitude as their standard error at ~150 training queries, so the estimates do not transfer across splits. Three estimators were tried (mean recall, mean nDCG, paired nDCG differences with a significance test) and all three lost. H4 is **untested at scale**, not falsified — the discriminating experiment is MS MARCO, where judged queries are ~1000x more plentiful.
+
 ---
 
 ## 5. Evaluation methodology

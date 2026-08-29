@@ -124,6 +124,26 @@ hybrid_rrf                0.693     4435        hybrid_rrf            0.346     
 
 The synthetic workload hid this because its relevant documents were constructed so that a single index could find all of them; union recall and relevance coincided. On real data they come apart. Estimating what fusion adds requires knowing which index's notion of similarity matches *this* corpus's judgments — which is not derivable from index statistics and is exactly the job of the unbuilt `LearnedPolicy` ([Research.md](./Research.md) §7, open problem 3).
 
+### The learned policy: built, and it does not help yet
+
+`LearnedPolicy` is now implemented (`broccoli/optimizer.py`). It runs each plan shape over judged training queries, records the nDCG each actually achieved bucketed by the rarest query term's document frequency, and at query time picks the **cheapest plan not measurably worse than the best** — where "measurably" means the gap survives both a tolerance and two standard errors of the *paired* per-query difference.
+
+Trained on half of each dataset and scored on the held-out half, **it loses to the rule-based policy it was meant to replace**:
+
+| scifact (150 held-out) | nDCG@10 | work | | nfcorpus (162 held-out) | nDCG@10 | work |
+|---|---|---|---|---|---|---|
+| ADAPTIVE (rules) | **0.675** | 842 | | ADAPTIVE (rules) | **0.293** | 636 |
+| ADAPTIVE (learned) | 0.658 | 3024 | | ADAPTIVE (learned) | 0.284 | 588 |
+| hybrid_rrf | 0.691 | 4617 | | hybrid_rrf | 0.314 | 1479 |
+
+The mechanism works; the estimates don't transfer. With ~150 training queries split across buckets, the per-plan quality differences it is trying to learn (0.02–0.08 nDCG) are the same size as the standard error on them. Concretely, the vector plan trains at 0.62 nDCG on SciFact and tests at 0.673 — the training split simply happened to contain harder vector queries. Learning from a bucketed mean cannot outrun that, and the significance test correctly refuses to act on most of the gaps, which leaves the policy close to a coin flip.
+
+Two things this does *not* mean. It is not evidence that a learned policy can't work — it is evidence that **this** amount of judged data can't support **this** estimator. And it does not rescue the rule-based policy's objective: fusion still wins on quality on both datasets, so the defect above stands.
+
+What would actually be needed, in order of expected value: many more judged queries (MS MARCO has ~500k, not 300); a feature that genuinely separates "the cheap plan suffices" from "fusion is required", which `min_df` demonstrably is not; and learning from click feedback through the existing `observe` hook, so the training set grows with traffic instead of being capped by a static qrels file.
+
+Three approaches were tried (learning recall, learning nDCG, learning paired nDCG differences) and all three lost to the rules. That is reported rather than tuned away, because the fourth attempt would have been fitting to the test split.
+
 Reproduce it:
 
 ```bash
@@ -152,8 +172,9 @@ PYTHONPATH=. python3 examples/beir_eval.py --data ./scifact
 | Evaluation harness: recall@k, nDCG, MRR, work/latency-at-fixed-recall | done |
 | BEIR runner on real judged data (`examples/beir_eval.py`) | done |
 | Persistence: save/open | done |
+| `LearnedPolicy`: measured relevance per query bucket, paired significance test | built — **does not beat the rules on the data tested** (above) |
 | Relevance-aware cost model (vs. today's operator-fidelity recall) | **not built — known defect, see BEIR results above** |
-| Learned policy, graph/temporal axes, distribution, Rust core | designed, not built |
+| Graph/temporal axes, distribution, Rust core | designed, not built |
 
 62 tests: `python3 -m pytest tests/ -q`
 
@@ -199,7 +220,9 @@ Start with **[document.md](./document.md)** (master index + glossary).
 
 - [x] Run the harness on judged data (BEIR) instead of synthetic ground truth — done, and it found a real defect in the optimizer's objective (above).
 - [ ] **Teach the cost model that relevance ≠ operator fidelity.** This is now the top priority, because it is the one thing standing between the optimizer and the best strategy on every real dataset tested.
-- [ ] `LearnedPolicy` trained on the query history already being logged — the BEIR result gives it a concrete job: learn per-index relevance coverage from judgments so fusion can be priced.
+- [x] `LearnedPolicy` — built, and honestly reported as not yet beating the rules (above).
+- [ ] Train the policy on **MS MARCO** (~500k judged queries rather than 300) to separate "this estimator is too weak" from "this dataset is too small". This is the experiment that decides whether the learned direction is worth keeping.
+- [ ] Find a query feature that actually predicts when fusion is required; `min_df` does not.
 - [ ] Port the engines to Rust behind the same interfaces (Tantivy / usearch / roaring).
 
 ## License

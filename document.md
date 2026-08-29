@@ -110,7 +110,7 @@ Terms below are used identically across all documents.
 
 **Explicitly deferred (fully designed, not built first):** distributed/sharded execution, graph & temporal index axes, the *learned* adaptive planner, multi-tenancy, and a hosted service. These are described in full in the design docs so the architecture accommodates them — but they are not the thing that proves the thesis.
 
-> The BEIR results promoted one of these from "deferred" to "blocking". The learned planner was deferred on the assumption that rules were good enough and learning was an optimization; real judged data showed the rules optimize the wrong objective and that the correction requires labels. It is now the next build, not a later one.
+> The BEIR results promoted one of these from "deferred" to "blocking", and then complicated it. The learned planner was deferred on the assumption that rules were good enough; real judged data showed the rules optimize the wrong objective (operator fidelity, not relevance), so `LearnedPolicy` was built. Measured on held-out queries it **loses to the rules** — not because the mechanism is wrong but because 150 judged queries per split cannot resolve the 0.02–0.08 nDCG differences it needs to learn. See [README](./README.md) and [Research.md](./Research.md) §4 (H4). The list above is therefore now: learned planner *built and honestly negative*; everything else still deferred.
 
 See **[SHAPE.md](./SHAPE.md)** for the hard no-gos and rabbit holes.
 

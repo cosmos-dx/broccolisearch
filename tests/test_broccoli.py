@@ -459,6 +459,74 @@ def test_policy_falls_back_to_best_recall_when_target_unreachable():
     assert policy.choose(plans, ctx).name == "b"
 
 
+# --------------------------- learned policy -------------------------------- #
+
+def _learned_ctx():
+    ctx = QueryContext(query=Query(text="x", recall_target=0.9))
+    ctx.features = {"has_text": True, "min_df": 4}
+    return ctx
+
+
+def _trained(cheap_q, rich_q, stderr):
+    """A policy hand-loaded with one bucket's measurements."""
+    policy = broccoli.LearnedPolicy(tolerance=0.01)
+    bucket = broccoli.LearnedPolicy.bucket(_learned_ctx().features)
+    policy.coverage = {bucket: {"vector": cheap_q, "hybrid_rrf": rich_q}}
+    policy.delta_se = {(bucket, "hybrid_rrf", "vector"): stderr,
+                       (bucket, "vector", "hybrid_rrf"): stderr}
+    policy.support = {bucket: 100}
+    return policy
+
+
+def test_learned_policy_ignores_a_quality_gap_smaller_than_its_own_error():
+    """The whole reason the paired standard error is tracked.
+
+    A 0.03 lead measured with a 0.05 standard error is not a lead, and buying
+    it at 5x the cost is how the policy would turn noise into latency.
+    """
+    plans = [_plan("vector", 1.0, 1.0), _plan("hybrid_rrf", 5.0, 1.0)]
+    policy = _trained(cheap_q=0.60, rich_q=0.63, stderr=0.05)
+    assert policy.choose(plans, _learned_ctx()).name == "vector"
+
+
+def test_learned_policy_pays_for_a_quality_gap_that_survives_its_error():
+    plans = [_plan("vector", 1.0, 1.0), _plan("hybrid_rrf", 5.0, 1.0)]
+    policy = _trained(cheap_q=0.60, rich_q=0.63, stderr=0.001)
+    assert policy.choose(plans, _learned_ctx()).name == "hybrid_rrf"
+
+
+def test_untrained_learned_policy_defers_to_the_rules():
+    """No evidence must mean 'use the old objective', never 'guess'."""
+    ctx = QueryContext(query=Query(text="x", recall_target=0.9))
+    ctx.features = {"has_text": True, "min_df": 4}
+    plans = [_plan("vector", 50.0, 0.95), _plan("hybrid_rrf", 5.0, 0.95)]
+    assert broccoli.LearnedPolicy().choose(plans, ctx).name == "hybrid_rrf"
+
+
+def test_learned_policy_fit_learns_preferences_without_polluting_history(index,
+                                                                        corpus):
+    centroids, _ = corpus
+    judgments = [
+        broccoli.Judgment(
+            query={"text": f"concept{c}", "semantic": list(centroids[c])},
+            relevant={f"c{c}d{i}": 1.0 for i in range(5)})
+        for c in range(N_CONCEPTS)
+    ]
+    before = len(index.stats.history)
+    policy = broccoli.LearnedPolicy(min_samples=2).fit(index, judgments, k=5)
+
+    assert policy.coverage, "fit produced no measurements"
+    for bucket, plans in policy.coverage.items():
+        assert set(plans) == {"lexical", "vector", "hybrid_rrf"}
+        # Every plan must be scored on the SAME queries, or the means and the
+        # paired errors compare different things.
+        for a, b in (("lexical", "vector"), ("lexical", "hybrid_rrf")):
+            assert (bucket, a, b) in policy.delta_se
+    # Probe queries are calibration traffic; leaving them in history would bias
+    # every statistic later read off it.
+    assert len(index.stats.history) == before
+
+
 def test_optimizer_enumerates_all_three_plans_for_hybrid_intent(index, corpus):
     centroids, _ = corpus
     hits = index.search(text="concept1", semantic=list(centroids[1]), k=5,
