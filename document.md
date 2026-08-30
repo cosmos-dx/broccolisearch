@@ -112,6 +112,8 @@ Terms below are used identically across all documents.
 
 > The BEIR results promoted one of these from "deferred" to "blocking". The learned planner was deferred on the assumption that rules were good enough; real judged data showed the rules optimised the wrong objective, so `LearnedPolicy` was built. It is now the best cost/quality point on both BEIR datasets — on SciFact it dominates the vector baseline and reaches 97.7% of fusion's quality for 5.5x less work. See [README](./README.md) and [Research.md](./Research.md) §4 (H4). The list above is therefore now: **learned planner built**; everything else still deferred.
 
+> The in-scope list has also moved: the **Rust core exists** for the one operator that needed it. `broccoli-core/` is an optional PyO3 extension holding a native inverted index and BM25 scan — bit-identical results, and no change to any interface, caller or test. The vector engine stays in numpy on purpose (BLAS already wins), so "Rust core" now means *the hot operator is native*, not *everything is Rust*. See [Architecture.md §6.1](./Architecture.md) and the [README](./README.md#the-rust-core).
+
 See **[SHAPE.md](./SHAPE.md)** for the hard no-gos and rabbit holes.
 
 ---

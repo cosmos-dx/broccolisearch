@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import heapq
 import math
+import os
 import re
 import time
+from collections.abc import Mapping
 from typing import Any, Dict, Iterable, List, Optional, Set
 
 from ..calibration import TIMING_REPEATS, fit_linear
@@ -22,6 +24,55 @@ from ..types import Budget, Capabilities, CandidateSet, CostEstimate
 from . import BaseIndex
 
 _TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+# The Rust core is optional: it is a build artefact, not a dependency, so the
+# library has to run without it. `BROCCOLI_NO_RUST=1` forces the Python path,
+# which is what lets the test suite run both and assert they agree.
+try:                                                # pragma: no cover
+    import broccoli_core as _rust
+except ImportError:                                 # pragma: no cover
+    _rust = None
+
+RUST = _rust is not None and os.environ.get("BROCCOLI_NO_RUST") != "1"
+
+# "Return everything, trim on the Python side" — used when the caller has to
+# filter the result before deciding what the top candidates even are.
+_NO_TRIM = 1 << 62
+
+
+class _RustPostings(Mapping):
+    """Read-only `{token: {doc_id: tf}}` view over the Rust core's index.
+
+    The Rust core owns the postings, but calibration picks probe terms by
+    iterating the vocabulary and the tests inspect posting lists directly.
+    Presenting a Mapping means neither has to know which backend is loaded —
+    which is the whole claim in Architecture.md §6, that the port swaps an
+    implementation and not an interface.
+    """
+
+    def __init__(self, core):
+        self._core = core
+        self._vocabulary: Optional[List[str]] = None
+
+    def invalidate(self) -> None:
+        self._vocabulary = None
+
+    def _tokens(self) -> List[str]:
+        if self._vocabulary is None:
+            self._vocabulary = self._core.vocabulary()
+        return self._vocabulary
+
+    def __getitem__(self, token):
+        pairs = self._core.postings(token)
+        if not pairs:
+            raise KeyError(token)
+        return dict(pairs)
+
+    def __iter__(self):
+        return iter(self._tokens())
+
+    def __len__(self):
+        return len(self._tokens())
 
 
 def _time_once(fn, *args) -> float:
@@ -71,26 +122,44 @@ class LexicalIndex(BaseIndex):
         """`fields` maps text field name -> analyzer name."""
         self.fields = dict(fields)
         self.deleted = deleted if deleted is not None else set()
-        self.postings: Dict[str, Dict[int, int]] = {}   # token -> {doc_id: tf}
-        self.doc_len: Dict[int, int] = {}
+        # The Rust core owns the postings when it is available; the Python
+        # dicts below are the fallback, not a duplicate copy of them.
+        self._core = _rust.LexicalCore() if RUST else None
+        self.postings: Any = (_RustPostings(self._core) if self._core is not None
+                              else {})            # token -> {doc_id: tf}
+        self._doc_len: Dict[int, int] = {}
         self._total_len = 0
         # Calibrated at build time: latency = base_ms + postings * sec_per_posting.
         self.sec_per_posting = 2.5e-7
         self.base_ms = 0.01
 
     # ------------------------------ build ---------------------------------- #
-    def add(self, doc_id: int, fields: Dict[str, Any]) -> None:
-        length = 0
+    def _tokens(self, fields: Dict[str, Any]) -> List[str]:
+        """Analyze a document into the flat token list both backends index.
+
+        Analysis stays in Python on purpose: it is done once per document
+        rather than once per posting, so it is not hot, and a second stemmer
+        implementation in Rust could drift out of step with this one. Index-time
+        and query-time analysis disagreeing is the classic silent recall bug.
+        """
+        tokens: List[str] = []
         for name, analyzer in self.fields.items():
             value = fields.get(name)
-            if not value:
-                continue
-            for token in analyze(value, analyzer):
-                self.postings.setdefault(token, {})
-                self.postings[token][doc_id] = self.postings[token].get(doc_id, 0) + 1
-                length += 1
-        self.doc_len[doc_id] = length
-        self._total_len += length
+            if value:
+                tokens.extend(analyze(value, analyzer))
+        return tokens
+
+    def add(self, doc_id: int, fields: Dict[str, Any]) -> None:
+        tokens = self._tokens(fields)
+        if self._core is not None:
+            self._core.add(doc_id, tokens)
+            self.postings.invalidate()
+            return
+        for token in tokens:
+            self.postings.setdefault(token, {})
+            self.postings[token][doc_id] = self.postings[token].get(doc_id, 0) + 1
+        self._doc_len[doc_id] = len(tokens)
+        self._total_len += len(tokens)
 
     def remove(self, doc_id: int, fields: Optional[Dict[str, Any]] = None) -> None:
         """Drop a document's postings.
@@ -99,30 +168,41 @@ class LexicalIndex(BaseIndex):
         contains; without them it must sweep the whole vocabulary, which makes
         a single delete cost O(vocabulary) instead of O(document length).
         """
-        length = self.doc_len.pop(doc_id, 0)
+        if self._core is not None:
+            self._core.remove(doc_id, self._tokens(fields) if fields else None)
+            self.postings.invalidate()
+            return
+        length = self._doc_len.pop(doc_id, 0)
         self._total_len -= length
         if fields is None:
             for postings in self.postings.values():
                 postings.pop(doc_id, None)
             return
-        for name, analyzer in self.fields.items():
-            value = fields.get(name)
-            if not value:
-                continue
-            for token in analyze(value, analyzer):
-                postings = self.postings.get(token)
-                if postings:
-                    postings.pop(doc_id, None)
+        for token in self._tokens(fields):
+            postings = self.postings.get(token)
+            if postings:
+                postings.pop(doc_id, None)
+
+    @property
+    def doc_len(self) -> Dict[int, int]:
+        if self._core is not None:
+            return self._core.doc_lens()
+        return self._doc_len
 
     @property
     def n_docs(self) -> int:
-        return len(self.doc_len)
+        if self._core is not None:
+            return self._core.n_docs()
+        return len(self._doc_len)
 
     @property
     def avgdl(self) -> float:
-        return (self._total_len / self.n_docs) if self.n_docs else 0.0
+        total = self._core.total_len() if self._core is not None else self._total_len
+        return (total / self.n_docs) if self.n_docs else 0.0
 
     def df(self, term: str) -> int:
+        if self._core is not None:
+            return self._core.df(term)
         return len(self.postings.get(term, ()))
 
     def analyze_query(self, text: str) -> List[str]:
@@ -162,15 +242,53 @@ class LexicalIndex(BaseIndex):
         return CostEstimate(latency_ms=latency_ms, recall=recall,
                             cardinality=int(cardinality))
 
+    def _search_native(self, terms: List[str], budget: Budget) -> CandidateSet:
+        """BM25 in the Rust core: one FFI crossing for the whole scan, never
+        one per document (Architecture.md §1.4).
+
+        The join order is decided HERE rather than in Rust, because handing the
+        domain across the boundary costs O(|domain|) whatever Rust then does
+        with it. Pushing a 4000-document filter down onto a 50-document posting
+        list made the query 80x more expensive than the cost model predicted:
+        the model charges min(df, |domain|) and the marshalling silently charged
+        |domain| on top. Choosing the side up here keeps the code spending the
+        same quantity the model estimates.
+        """
+        deleted = self.deleted or None
+        domain = budget.domain
+        if domain is not None and len(domain) >= sum(self.df(t) for t in terms):
+            # The posting lists are the smaller side, so scan them whole and
+            # drop non-members here: that is df set lookups in Python against
+            # |domain| elements marshalled into Rust, and we just established
+            # which of those is smaller. Trimming has to happen after the
+            # filter, or the surviving documents would be chosen from an
+            # already-truncated list.
+            ids, values, examined = self._core.search(terms, _NO_TRIM, None, deleted)
+            pairs = [kv for kv in zip(ids, values) if kv[0] in domain]
+            if len(pairs) > budget.candidates:
+                pairs = heapq.nlargest(budget.candidates, pairs,
+                                       key=lambda kv: (kv[1], -kv[0]))
+            scores = dict(pairs)
+        else:
+            ids, values, examined = self._core.search(
+                terms, budget.candidates, domain, deleted)
+            scores = dict(zip(ids, values))
+        return CandidateSet(scores=scores, source=self.name, examined=examined)
+
     def search(self, terms: Iterable[str], budget: Budget) -> CandidateSet:
         """BM25 over the posting lists of the query terms only."""
         started = time.perf_counter()
         terms = list(terms)
+        if self._core is not None:
+            cs = self._search_native(terms, budget)
+            self._last_latency_ms = (time.perf_counter() - started) * 1000.0
+            return cs
         scores: Dict[int, float] = {}
         examined = 0
         n = max(self.n_docs, 1)
         avgdl = self.avgdl or 1.0
         domain = budget.domain
+        doc_len = self._doc_len          # hoisted: this is read once per posting
         for term in terms:
             postings = self.postings.get(term)
             if not postings:
@@ -190,7 +308,7 @@ class LexicalIndex(BaseIndex):
             for doc_id, tf in pairs:
                 if doc_id in self.deleted:
                     continue
-                dl = self.doc_len.get(doc_id, 0)
+                dl = doc_len.get(doc_id, 0)
                 denom = tf + K1 * (1 - B + B * dl / avgdl)
                 scores[doc_id] = scores.get(doc_id, 0.0) + idf * (tf * (K1 + 1)) / denom
         if len(scores) > budget.candidates:

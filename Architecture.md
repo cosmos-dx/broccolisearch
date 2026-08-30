@@ -225,7 +225,59 @@ Step 8 closes the loop: actual vs. estimated cost is logged, which is the traini
 
 See **Approach.md** for the reuse ladder that produced these choices.
 
-### 6.1 Why not Go?
+### 6.1 Status: the first engine is ported
+
+`broccoli-core/` is a real PyO3 extension holding a native inverted index and
+BM25 scan. It is optional — absent it, the Python path runs and the whole suite
+still passes — and it is selected per `LexicalIndex` instance at construction,
+so both backends can be exercised in one process.
+
+**What this validated is the interface claim, not the language choice.** The
+optimizer, the cost model, the calibration routines and all 71 tests were
+unchanged by the swap. That is the property §4.1 asserts and it had never been
+tested before, because there had only ever been one implementation of
+`BaseIndex` to depend on.
+
+Three findings worth carrying into the remaining ports:
+
+1. **Not everything should be ported.** The vector engine stays numpy. Its exact
+   scan is one matmul already executing in BLAS with SIMD, so a hand-written
+   Rust loop would have been slower. "Port the hot loop" is the rule; "port
+   everything" is how you spend a week to lose a benchmark.
+2. **Keep analysis on the Python side.** Tokenising and stemming happen once per
+   document, not once per posting, so they are not hot — and two stemmer
+   implementations would eventually disagree, which silently destroys recall
+   when index-time and query-time analysis drift apart. Rust receives tokens,
+   never text.
+3. **The FFI boundary is a cost the cost model must know about.** See §6.2 below;
+   this one caused a real bug.
+
+Measured: a large speedup on long posting-list scans, tapering to none on short
+ones, and the cost model's error on keyword queries fell from 43.5% to 8.9% —
+the sub-0.05ms error was substantially an artefact of timing an interpreter,
+rather than a modelling failure.
+
+### 6.2 The boundary has a price, and the estimator has to be told
+
+The rule in §1.4 is that FFI crossings are per-operation, never
+per-document-in-a-loop. That is necessary but was not sufficient. Handing a
+filter's surviving-document set to Rust costs **O(|domain|) whatever Rust then
+does with it**, while the lexical cost model charges `min(df, |domain|)`. A
+4,000-document filter pushed onto a 50-document posting list therefore paid
+4,000 units of marshalling the estimator could not see, and filtered keyword
+queries went from 23.7% error to 68.9%.
+
+The fix was to choose the join order **above** the boundary rather than inside
+Rust: when the posting lists are the smaller side they are scanned unfiltered
+and non-members are dropped in Python, so the domain never crosses at all. Both
+branches then cost the `min(df, |domain|)` the model already estimates.
+
+Generalised, for every engine still to be ported: **an operator is only worth
+making faster if the cost model still describes it afterwards.** An optimizer
+that mispredicts its own fastest operator will route queries away from it, and
+the port will show up as a regression.
+
+### 6.3 Why not Go?
 
 Go is a reasonable question for this system and worth answering explicitly rather than by omission, because it beats Rust on the two things this project has actually spent its time on: build/iterate speed, and how quickly a contributor can get productive. The optimizer — the part that carries the whole thesis — is ordinary business logic over statistics, and Go would express it just as well.
 
@@ -239,7 +291,9 @@ The decision goes the other way for one reason that is specific to this project 
 
 The **[Approach.md](./Approach.md) reuse ladder is what decides this**: the directive is "rent the indexes, own the planner". Rust is where the rentable indexes live. Choosing Go would mean writing more of the layer this project deliberately refuses to write, to save effort on the layer it actually cares about — backwards.
 
-Two things worth being honest about. First, none of this is why the current implementation is Python: that is a reference implementation, chosen because no Rust toolchain exists in this environment, and it is where every measured result in the README comes from. Second, **if the port ever happens, the language matters far less than the interfaces** — `BaseIndex` and `Policy` are what the optimizer depends on. A Go core behind the same two interfaces would be a worse fit for the reasons above, not an incorrect one, and the optimizer would not know the difference.
+Two things worth being honest about. First, the argument above is about the *engines*, not the planner: everything the optimizer does is still Python, and nothing in the measured results depends on the core language. Second, **the interfaces matter far more than the language** — `BaseIndex` and `Policy` are what the optimizer depends on. A Go core behind the same two interfaces would be a worse fit for the reasons above, not an incorrect one, and the optimizer would not know the difference.
+
+§6.1 is now evidence for that second claim rather than a prediction of it. Swapping the lexical engine for a native implementation changed no interface, no caller and no test — which is exactly what should happen, and is the reason the language question stays a trade-off about ecosystems instead of a rewrite.
 
 ---
 

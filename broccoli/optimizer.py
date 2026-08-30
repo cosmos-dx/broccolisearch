@@ -70,6 +70,13 @@ class Policy(ABC):
         """Feedback hook. The rule-based policy ignores it; a learned one won't."""
 
 
+# Two plans whose estimated latencies differ by less than this are treated as
+# equally cheap. Deliberately far below the cost model's own ~17% median error
+# (examples/cost_model_error.py) so the tie-break only fires on differences the
+# model demonstrably cannot resolve.
+COST_TIE_BAND = 0.10
+
+
 class RuleBasedPolicy(Policy):
     """Minimum estimated latency subject to meeting the recall target.
 
@@ -86,7 +93,21 @@ class RuleBasedPolicy(Policy):
         target = ctx.query.recall_target
         meeting = [p for p in candidates if p.estimate.recall >= target]
         if meeting:
-            return min(meeting, key=lambda p: p.estimate.latency_ms)
+            # Do not discriminate between plans on a cost difference smaller
+            # than the cost model's own error: that is choosing on noise. Among
+            # plans that are indistinguishably cheap, prefer the one that
+            # consults MORE evidence.
+            #
+            # Found on identifier-style queries, which priced the vector plan at
+            # 850 work units and the fusion plan at 851. The planner took the
+            # 0.1% saving and scored recall 0.000; the plan it discarded scored
+            # 0.862, because a short exact code is precisely what an embedding
+            # cannot represent and BM25 nails.
+            cheapest = min(p.estimate.latency_ms for p in meeting)
+            band = cheapest * (1.0 + COST_TIE_BAND) + 1e-9
+            tied = [p for p in meeting if p.estimate.latency_ms <= band]
+            return max(tied, key=lambda p: (p.estimate.recall,
+                                            -p.estimate.latency_ms))
         # Nothing reaches the target: best-effort = highest recall, ties by speed.
         return max(candidates, key=lambda p: (p.estimate.recall,
                                               -p.estimate.latency_ms))

@@ -16,6 +16,20 @@ pip install -e .            # or: pip install -r requirements.txt
 
 Requires Python ≥3.9 and `numpy`. `hnswlib` is optional — without it the vector index still returns **exact** results, just exhaustively.
 
+### Optional: the Rust core
+
+The lexical scan has a native implementation. It is **optional**: without it the
+pure-Python path runs and every test still passes.
+
+```bash
+cd broccoli-core && maturin build --release && pip install --force-reinstall target/wheels/*.whl
+```
+
+It speeds up the posting-list scan and cuts the cost model's error on keyword
+queries from 43.5% to 8.9%. Set `BROCCOLI_NO_RUST=1` to force the Python path —
+that is how the test suite runs both and asserts they agree. See
+[The Rust core](#the-rust-core) below.
+
 ## Quickstart
 
 ```python
@@ -79,7 +93,7 @@ That gap is the honest price of not having relevance labels, and it is why `Poli
 
 - The win is **1.17×, not dramatic**, and it needs judgments. Filter push-down happens during planning and therefore benefits *every* strategy including the fixed ones, so this workload understates what the optimizer would save in a system where fixed strategies don't get that for free.
 - **Work units, not wall-clock, are the trustworthy metric.** At this scale in Python, latency swings ~15% with run *order* alone (cold caches) — larger than the gap between plans. The latency columns are indicative only.
-- The cost model's estimate error is **~25% median** (`examples/cost_model_error.py`), concentrated in sub-0.05ms queries where fixed per-query cost is most of the total. It is calibrated for **ranking plans correctly**, which the tests assert, not for predicting absolute latency. See the error section below — the previously advertised "10–15%" was a measurement artifact, not a better model.
+- The cost model's estimate error is **~17% median** (`examples/cost_model_error.py`), concentrated in sub-0.05ms queries where fixed per-query cost is most of the total. It is calibrated for **ranking plans correctly**, which the tests assert, not for predicting absolute latency. See the error section below — the previously advertised "10–15%" was a measurement artifact, not a better model.
 - This particular workload is synthetic. See below for what happened on real judged data — it is not the same story.
 
 ### Fixing the cost model was also a speedup
@@ -113,7 +127,7 @@ Two modelling errors were fixed alongside them: result marshalling is O(k) and w
 
 The harness itself now reports across **independent calibrations** and varies `k` across the workload, because a fixed-k workload cannot distinguish a per-hit cost from a constant and scores that entire term as correct no matter what it is.
 
-Current honest number: **24.7% median**, worst on sub-0.05ms keyword queries (49%) where fixed overhead is nearly the whole latency, best on vector plans (11.8%). That is higher than the number this file used to claim and lower than the truth behind it.
+Current honest number: **17.4% median**, reproducible to within ~2 points across independent calibrations (16.4%, 17.7%, 18.9%). It remains worst on sub-0.05ms keyword queries, where fixed overhead is nearly the whole latency, and best on vector plans (9.3%).
 
 The earlier standalone simulation (`experiments/thesis_prototype.py`, no dependencies) shows a larger 1.81× on an idealized cost model — the gap between the two is exactly why the real library was measured separately.
 
@@ -150,6 +164,20 @@ Below the measured coverage the optimizer buys the cheap single-index plan; abov
 
 What it does *not* buy is a free lunch. Reaching fusion's quality costs fusion's work, because on a homogeneous workload there is nothing to route — every SciFact query is the same shape. Per-query routing is what H1 predicts a win from, and it needs a *mixed* workload, which these datasets are not.
 
+### Cost differences below the model's own error must not decide plans
+
+An early version of the rule-based policy would price two plans at 850 and 851
+work units and take the 0.1% saving — discarding a plan that was dramatically
+better on quality for a saving far below the cost model's own ~17% median error.
+Discriminating between plans on a difference you cannot measure is choosing on
+noise, so `RuleBasedPolicy` now prefers the plan that consults **more evidence**
+when two are indistinguishably cheap (`COST_TIE_BAND` in
+`broccoli/optimizer.py`, with tests in `tests/test_broccoli.py`). SciFact is
+unchanged at 0.693 nDCG and the `recall` dial still traces its curve, because
+there fusion costs 5× more and never enters the tie band.
+
+---
+
 ### The learned policy: built, and it finds the best value point
 
 `LearnedPolicy` (`broccoli/optimizer.py`) runs each plan shape over judged training queries, records the nDCG each actually achieved bucketed by the **fraction of the corpus** the rarest query term matches, and at query time picks the **cheapest plan not measurably worse than the best** — where "measurably" means the gap survives both a tolerance and two standard errors of the *paired* per-query difference. Pairing matters: query difficulty dominates nDCG variance and is common to both plans, so it cancels in the difference and makes gaps detectable on a few hundred queries that are invisible in either plan's absolute mean.
@@ -184,6 +212,94 @@ PYTHONPATH=. python3 examples/beir_eval.py --data ./scifact
 
 ---
 
+## The Rust core
+
+```bash
+cd broccoli-core && maturin build --release && pip install --force-reinstall target/wheels/*.whl
+```
+
+**Only the lexical scan was ported, and that is a result rather than an
+omission.** The vector index is a single numpy matmul that already runs in BLAS
+with SIMD; replacing a tuned kernel with a hand-written Rust loop is a good way
+to lose a benchmark. The scan is where the interpreter was actually standing in
+the way — a Python `dict` update per posting, several million times a second.
+
+The gain is largest on long posting lists and disappears on short ones, which is
+Amdahl's law rather than a disappointment: a query whose posting list holds a
+single entry is almost entirely Python pipeline overhead, and making one stage
+free cannot speed a query up by more than that stage's share of it.
+
+### It also answered an open question about the cost model
+
+The remaining question was whether the cost model's large error on cheap
+keyword queries was a modelling failure or an artefact of timing sub-0.05ms
+operations in Python. Running the same instrument over both backends, nine
+independent calibrations each, settles it:
+
+| query shape | Python | Rust |
+|---|---|---|
+| keyword | 43.5% | **8.9%** |
+| filtered | 18.4% | 7.4% |
+| semantic | 17.7% | 17.5% |
+| filtered_kw | 24.7% | 33.0% |
+| **overall** | **24.8%** | **18.5%** |
+
+So it was **largely a Python floor**. The model was predicting a scan whose cost
+was dominated by interpreter overhead it could not see; the same model over a
+native scan is 5x more accurate on exactly the queries it was worst at. The
+`semantic` row is the control — nothing about the vector path changed, and its
+error did not move.
+
+Calibration variance dropped too, which matters because
+[Approach.md](./Approach.md) shows it was the dominant term: the per-calibration
+medians span 6.9%–40.3% on Python but only 9.8%–29.7% on Rust. More predictable
+execution makes the *instrument* more repeatable, not just the engine faster.
+
+`filtered_kw` is the one row that got **worse**, and it is an honest residual —
+see the FFI cost below.
+
+### What the port cost, and the bug it caused
+
+The first working version made filtered keyword queries **80x more expensive
+than the cost model predicted** (`filtered_kw` error 23.7% → 68.9%). Passing the
+filter's surviving-document set across the FFI boundary costs O(|domain|)
+*whatever Rust then does with it*, and the cost model charges only
+`min(df, |domain|)`. Pushing a 4,000-document filter onto a 50-document posting
+list therefore paid 4,000 units of invisible marshalling to save nothing.
+
+The fix is to decide the join order **before** crossing the boundary rather than
+inside Rust: when the posting lists are the smaller side, they are scanned
+unfiltered and the non-members are dropped in Python, so the domain is never
+marshalled at all. That restored `filtered_kw` to 27–33% and left the model
+charging the quantity the code actually spends.
+
+This is the general lesson of the port, and it is not "Rust is faster": *a
+faster operator is only useful if the cost model still describes it.* An
+optimizer that mispredicts its own fastest operator will route queries away from
+it.
+
+### Guarantee: the two backends agree exactly
+
+The port is an implementation swap, not a behaviour change, and that is
+asserted rather than assumed. `test_rust_core_and_python_agree_exactly` runs
+both over the same corpus and compares scores with `==`, not `approx` — BM25
+sums float contributions per query term, so the backends only agree bit-for-bit
+if they accumulate in the same order at the same width. A tolerance is exactly
+where a real scoring divergence would hide.
+
+The test was checked by mutation: perturbing Rust's `B` constant by 1e-10 makes
+it fail. That check exists because the first version of the test passed
+*vacuously* — it queried `"gardening"` against an index that had stemmed the
+word to `"garden"`, so both backends returned nothing and agreed perfectly about
+it.
+
+Analysis deliberately stays in Python. It runs once per document rather than
+once per posting, so it is not hot, and a second stemmer implementation would
+eventually drift from the first — index-time and query-time analysis disagreeing
+is the classic silent way to destroy recall.
+
+---
+
 ## What's implemented
 
 | Area | Status |
@@ -204,11 +320,20 @@ PYTHONPATH=. python3 examples/beir_eval.py --data ./scifact
 | Persistence: save/open | done |
 | `LearnedPolicy`: measured relevance per query bucket, paired significance test | done |
 | Relevance-aware cost model: measured per-index coverage of a fused answer | done |
-| Graph/temporal axes, distribution, Rust core | designed, not built |
+| **Rust core (PyO3): native inverted index + BM25 scan, optional, bit-identical** | done |
+| Rust ports of the vector and structured engines | not built — see below |
+| Graph/temporal axes, distribution | designed, not built |
 
-62 tests: `python3 -m pytest tests/ -q`
+71 tests, and they run twice: `python3 -m pytest tests/ -q` and
+`BROCCOLI_NO_RUST=1 python3 -m pytest tests/ -q`.
 
-> **On the Rust core:** [Architecture.md](./Architecture.md) specifies a Rust engine with PyO3 bindings, which is still the right end state. No Rust toolchain exists in this environment, so this is the Python reference implementation of the same architecture — the `BaseIndex` / `Policy` interfaces are what the optimizer depends on, so each engine can be swapped for Tantivy/usearch/roaring without touching the planner.
+> **On the rest of the Rust core:** [Architecture.md §6](./Architecture.md)
+> specifies native engines behind the `BaseIndex` interface, and the lexical one
+> now exists — which is the part that proves the interface holds, since the
+> optimizer, the calibration and the whole test suite were unchanged by the
+> swap. The vector engine is deliberately still numpy (BLAS already beats what a
+> hand-written Rust loop would do), and renting Tantivy / usearch / roaring
+> instead of the hand-rolled structures remains future work.
 
 ---
 
@@ -229,6 +354,9 @@ broccoli/
 ├── eval.py          # judged-query harness and IR metrics
 ├── query.py         # Query/filters/Plan/Explain
 └── schema.py        # field types + validation
+
+broccoli-core/           # optional Rust extension (PyO3)
+└── src/lib.rs           # native inverted index + BM25 scan
 ```
 
 ## Documentation
@@ -252,9 +380,12 @@ Start with **[document.md](./document.md)** (master index + glossary).
 - [x] **Teach the cost model that relevance ≠ operator fidelity** — done via measured per-index coverage; `recall` is now a working dial.
 - [x] `LearnedPolicy` — built, and now the best value point on both BEIR datasets.
 - [ ] Train the policy on **MS MARCO** (~500k judged queries rather than 300), where the buckets would not be data-starved.
-- [ ] **Validate filter push-down on real data.** Still open and still the largest untested claim: it is the mechanism the design leans on hardest, and neither SciFact nor NFCorpus ships usable metadata (their `metadata` fields are empty or a bare URL). Needs a judged corpus with real structured fields — TREC-COVID has `publish_time`.
-- [ ] Drive the sub-0.05ms error down, or conclude it is a Python floor and say so. It is 49% on keyword queries versus 12% on vector plans.
-- [ ] Port the engines to Rust behind the same interfaces (Tantivy / usearch / roaring). See [Architecture.md §6.1](./Architecture.md) for why not Go.
+- [ ] **Validate filter push-down on real data.** It is the mechanism the design leans on hardest, and it is still only exercised synthetically — neither BEIR corpus ships usable structured fields. This needs a corpus with real metadata to filter on.
+- [ ] **Test H1 on a mixed workload with real judgments.** H1 predicts a per-query routing win only where query *shapes* vary; SciFact and NFCorpus are homogeneous, so there is nothing to route and the claim stays untested on real data.
+- [x] **Settle the sub-0.05ms error** — done, and it was largely a Python floor: keyword-query error fell 43.5% → 8.9% under the native scan, with the vector path unchanged as a control.
+- [x] **Port the hot operator to Rust behind the same interface** — done; `broccoli-core` speeds up the scan with bit-identical results and no interface change. See [Architecture.md §6.3](./Architecture.md) for why not Go.
+- [ ] Model the FFI marshalling cost so `filtered_kw` stops being the worst row (33.0%): the estimate charges `min(df, |domain|)` but the boundary crossing is real work the model cannot see.
+- [ ] Rent Tantivy / usearch / roaring in place of the hand-rolled structures, now that the interface has survived one real swap.
 
 ## License
 

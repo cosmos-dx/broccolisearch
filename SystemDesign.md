@@ -207,6 +207,21 @@ each one was added because measurement showed the model was wrong without it:
   `actual_latency_ms` (what the caller waited for) and `execution_ms` (the plan
   alone); comparing the estimate to the latter reported errors the model had
   not made.
+- **Do not let an operator spend work the model has no term for.** With the
+  native lexical scan (Architecture.md §6.1), handing the filter's survivor set
+  across the FFI boundary costs O(|domain|) regardless of what the scan then
+  does, while the model charges `min(df, |domain|)`. A 4,000-document filter
+  pushed onto a 50-document posting list paid 4,000 units of invisible
+  marshalling, and filtered keyword error went 23.7% → 68.9%. The join order is
+  therefore chosen *above* the boundary: when the posting lists are smaller they
+  are scanned unfiltered and non-members dropped on the Python side, so the
+  domain never crosses. Either the model learns the term or the code stops
+  spending it — and the second is usually the faster program as well.
+
+  > This is the general hazard when engines get faster underneath a planner:
+  > **an operator the model mis-prices will be routed away from, so a genuine
+  > speedup can surface as a regression.** Re-run `examples/cost_model_error.py`
+  > after any operator change, not just the latency benchmark.
 - **Extrapolate past the calibrated range, never clamp to it.** Beyond the
   measured `ef` ladder, cost grows ~linearly in `ef`; clamping to the widest
   measured point made large budgets look free.

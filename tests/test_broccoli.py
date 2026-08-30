@@ -359,6 +359,68 @@ def test_lexical_remove_with_fields_matches_full_sweep(corpus):
     assert fast.doc_len == slow.doc_len
 
 
+def test_rust_core_and_python_agree_exactly(corpus):
+    """The Rust port must be an implementation swap, not a behaviour change.
+
+    Scores are compared with `==`, not `approx`. A tolerance here would be the
+    place a real scoring divergence hides: BM25 sums float contributions per
+    query term, so the two backends only agree bit-for-bit if they accumulate
+    in the same order with the same width. That is a property worth asserting,
+    because losing it would reorder results without ever failing loudly.
+
+    The cases below are the ones where the two implementations do genuinely
+    different work: the unfiltered scan, both join orders around a filter
+    (domain larger vs smaller than the posting list), and deletes.
+    """
+    from broccoli.indexes import lexical as lex
+    if not lex.RUST:
+        pytest.skip("Rust core not built; run maturin build in broccoli-core/")
+
+    _, docs = corpus
+    fields = {"title": "english", "body": "english"}
+    rust = lex.LexicalIndex(fields)
+    assert rust._core is not None, "fixture must actually exercise the Rust path"
+    saved, lex.RUST = lex.RUST, False
+    try:
+        python = lex.LexicalIndex(fields)
+    finally:
+        lex.RUST = saved
+    assert python._core is None
+
+    for i, doc in enumerate(docs):
+        rust.add(i, doc)
+        python.add(i, doc)
+
+    rust.remove(3, docs[3])
+    python.remove(3, docs[3])
+
+    assert rust.n_docs == python.n_docs
+    assert rust.avgdl == python.avgdl
+    assert rust.doc_len == python.doc_len
+    assert set(rust.postings) == set(python.postings)
+    for token in python.postings:
+        assert rust.postings[token] == python.postings[token], token
+
+    everything = set(python.doc_len)
+    small = set(sorted(everything)[:5])
+    # Terms go through the analyzer, exactly as the engine does it: querying
+    # with raw words would search for "gardening" in an index that stemmed it
+    # to "garden", match nothing, and make every comparison below vacuous.
+    queries = [python.analyze_query(text) for text in (
+        "gardening", "concept0", "topic1 filler",
+        "gardening number document", "nonexistent")] + [[]]
+    assert len(rust.search(queries[0], Budget(candidates=10_000)).scores) > 50, \
+        "probe query matches nothing, so the comparison would prove nothing"
+    for terms in queries:
+        for domain in (None, everything, small):
+            for candidates in (3, 10, 10_000):
+                budget = Budget(candidates=candidates, domain=domain)
+                a = rust.search(terms, budget)
+                b = python.search(terms, budget)
+                assert a.scores == b.scores, (terms, domain is not None, candidates)
+                assert a.examined == b.examined, (terms, candidates)
+
+
 def test_top_k_matches_a_full_sort_including_ties():
     """nlargest replaced a full sort; ties must still break by doc id."""
     from broccoli import ranking
@@ -505,8 +567,34 @@ def test_recall_target_actually_changes_the_chosen_plan(index, corpus):
                          recall=0.5, explain=True)
     thorough = index.search(text="concept1", semantic=list(centroids[1]), k=5,
                             recall=0.95, explain=True)
-    assert cheap.plan.name != thorough.plan.name
     assert thorough.plan.name == "hybrid_rrf"
+    # Asking for less recall must never buy a MORE expensive plan. It does not
+    # have to buy a different one: where fusion is nearly free the tie-break
+    # below correctly keeps it at both targets.
+    assert (cheap.plan.estimate.latency_ms
+            <= thorough.plan.estimate.latency_ms + 1e-9)
+
+
+def test_a_negligible_saving_never_costs_a_retrieval_source(index):
+    """Regression: a 0.1% cheaper plan must not win by dropping an index.
+
+    Measured on identifier-style queries: an exact-code lookup priced the vector
+    plan at 850 work units and the fusion plan at 851; the planner took the 0.1%
+    and scored recall 0.000, where the plan it discarded scored 0.862. A short
+    exact code is precisely what an embedding cannot represent and BM25 nails,
+    and no cost model resolves 0.1% — that difference was noise.
+    """
+    ctx = QueryContext(query=Query(text="concept1", semantic=[0.0], k=10,
+                                   recall_target=0.9))
+    lean = _plan("vector", 1.000, 0.93)
+    rich = _plan("hybrid_rrf", 1.001, 0.99)
+    assert RuleBasedPolicy().choose([lean, rich], ctx) is rich
+
+    # But a genuinely cheaper plan still wins: this must not become "always
+    # fuse", which is a fixed strategy wearing an optimizer's hat.
+    much_cheaper = _plan("vector", 1.0, 0.93)
+    expensive = _plan("hybrid_rrf", 5.0, 0.99)
+    assert RuleBasedPolicy().choose([much_cheaper, expensive], ctx) is much_cheaper
 
 
 # --------------------------- learned policy -------------------------------- #
