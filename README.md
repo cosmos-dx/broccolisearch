@@ -361,10 +361,10 @@ broccoli-core/           # optional Rust extension (PyO3)
 
 ## Documentation
 
-New to search? Start with **[BOOK.md](./BOOK.md)** — a self-contained 63-page
-book that assumes no prior knowledge of information retrieval, explains every
-term and formula, surveys the existing market, and then covers this system end to
-end. Build the PDF with `python3 build_book.py`; the mathematics is typeset by
+New to search? Start with **[BOOK.md](./BOOK.md)** — a self-contained 81-page
+book in 40 chapters that assumes no prior knowledge of information retrieval,
+explains every term and formula, surveys the existing market, and then covers
+this system end to end. Build the PDF with `python3 build_book.py`; the mathematics is typeset by
 MathJax and the nine figures are generated from Mermaid source at build time.
 
 <a href="./BOOK.md"><img src="./assets/cover.png" alt="BroccoliSearch — How Search Engines Decide, and Why Ours Decides for You" width="230"></a>

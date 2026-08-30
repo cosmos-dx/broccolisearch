@@ -12,5 +12,10 @@ broccoli-core/target/
 # Cached embeddings, written next to whichever dataset you point the evals at
 _*.npz
 
+# Scratch renders used to proof single chapters of the book
+_*.md
+_*.pdf
+_*.html
+
 # Intermediate render from build_book.py; BOOK.pdf is the artefact worth keeping
 BOOK.html

@@ -57,9 +57,7 @@ Typeset from Markdown by the project's own `build_book.py`. See the Colophon.
 
 </div>
 
-<div class="pagebreak"></div>
-
-## Preface
+# Preface
 
 This book exists because of a question I could not answer.
 
@@ -100,9 +98,7 @@ prediction is poor.
 *Abhishek Gupta*
 `github.com/cosmos-dx`
 
-<div class="pagebreak"></div>
-
-## How to read this book
+# How to read this book
 
 **Who it is for.** Anyone who wants to understand modern search from the ground
 up. It assumes you can read a little Python and remember what a logarithm is. It
@@ -120,13 +116,13 @@ forty years while search engines have not; and use this library.
 
 | If you want to… | Read |
 |---|---|
-| Learn how search works, from nothing | Parts I and II, in order |
-| Understand what is new here | Part III, then Part IV |
-| Just use the library | Part VI, and Chapter 40 |
-| Judge whether it works | Part VII, which holds every measured number |
+| Learn how search works, from nothing | Chapters 1–13, in order |
+| Understand what is new here | Chapters 14–16, then 17–23 |
+| Just use the library | Chapters 28–34, and Chapter 40 |
+| Judge whether it works | Chapters 35–40, which hold every measured number |
 
-Parts I–III are the field: the problem, the vocabulary, the mathematics, and
-where the market stands. Parts IV–VII are this specific system.
+Chapters 1–16 are the field: the problem, the vocabulary, the mathematics, and
+where the market stands. Chapters 17–40 are this specific system.
 
 **Conventions.** Code that you can run appears in blocks like this:
 
@@ -141,19 +137,17 @@ vertical rule contain the single most important idea of their section:
 > A claim in this book is either measured by a named script in the repository, or
 > explicitly labelled as untested.
 
-<div class="pagebreak"></div>
-
-## Table of contents
+# Table of contents
 
 *Preface · How to read this book · List of figures*
 
-**Part I — The Problem**
+**The Problem** · chapters 1–4
 1. What "search" actually is
 2. Two ways to match, and why neither wins
 3. The market today
 4. The specific pain: strategy is hardcoded
 
-**Part II — Foundations**
+**Foundations** · chapters 5–13
 5. From text to terms: analysis
 6. The inverted index
 7. BM25, derived and explained
@@ -164,12 +158,12 @@ vertical rule contain the single most important idea of their section:
 12. Measuring quality: recall, precision, nDCG, MRR
 13. What databases have that search engines don't
 
-**Part III — The Gap**
+**The Gap** · chapters 14–16
 14. What each system decides for you
 15. The gap, stated precisely
 16. Why nobody has closed it
 
-**Part IV — What BroccoliSearch Does**
+**What BroccoliSearch Does** · chapters 17–23
 17. The thesis and the architecture
 18. The life of a query
 19. The cost model
@@ -178,13 +172,13 @@ vertical rule contain the single most important idea of their section:
 22. Policies: rules, tie-breaks, and learning
 23. Filter push-down
 
-**Part V — The Native Core**
+**The Native Core** · chapters 24–27
 24. Why Rust, what PyO3 is
 25. What was ported, and what deliberately was not
 26. The bug the port caused
 27. The bit-identical guarantee
 
-**Part VI — Using the Library**
+**Using the Library** · chapters 28–34
 28. Installation
 29. Hello, search
 30. Filters
@@ -193,7 +187,7 @@ vertical rule contain the single most important idea of their section:
 33. The learned policy
 34. Persistence, updates and deletes
 
-**Part VII — Results and Honest Limits**
+**Results and Honest Limits** · chapters 35–40
 35. The synthetic workload
 36. Real judged data: BEIR
 37. How wrong is the cost model?
@@ -211,9 +205,8 @@ F. Index
 
 *Colophon · About the Author*
 
----
 
-## List of figures
+# List of figures
 
 | Figure | | Chapter |
 |---|---|---|
@@ -227,12 +220,8 @@ F. Index
 | 23.1 | Filter push-down | 23 |
 | 25.1 | What crosses into Rust | 25 |
 
----
----
 
-# Part I — The Problem
-
-## 1. What "search" actually is
+# Chapter 1 — What "search" actually is
 
 Strip away the interface and search is one question:
 
@@ -260,7 +249,7 @@ search is difficult. The engine sees a string. It does not see the intent behind
 the string. Everything that follows is an attempt to approximate intent with
 arithmetic.
 
-### The two costs of an answer
+## The two costs of an answer
 
 Every search system trades off two quantities, and holding one constant while
 improving the other is what "making search better" means:
@@ -275,14 +264,13 @@ A system that returns perfect results in four seconds is useless for a search
 box. A system that answers in one millisecond with the wrong documents is worse
 than useless, because it looks like it is working.
 
----
 
-## 2. Two ways to match, and why neither wins
+# Chapter 2 — Two ways to match, and why neither wins
 
 There are two fundamentally different ways to decide whether a document matches a
 query, and modern search is largely the story of their rivalry.
 
-### Lexical matching: do the words appear?
+## Lexical matching: do the words appear?
 
 The document contains the words. "Broccoli seeds" matches a document containing
 "broccoli" and "seeds". This is what Google was in 1999, what Elasticsearch does
@@ -296,7 +284,7 @@ Its failure is the **vocabulary mismatch problem**: a document about "cardiac
 arrest" does not contain the word "heart attack", so a lexical engine scores it
 zero, even though it is exactly what the user wanted.
 
-### Semantic matching: does it mean the same thing?
+## Semantic matching: does it mean the same thing?
 
 Convert both the query and the documents into lists of numbers — **vectors** —
 positioned so that things with similar *meaning* land near each other. Then
@@ -310,7 +298,7 @@ it returns documents that are *vaguely code-like*, because it has no mechanism
 for exactness. It also cannot explain itself: the document scored 0.83 and no
 human can say why.
 
-### The honest summary
+## The honest summary
 
 | | Lexical (BM25) | Semantic (vectors) |
 |---|---|---|
@@ -327,14 +315,13 @@ running both and combining them ("hybrid search") became standard practice — a
 precisely why doing that unconditionally is wasteful, which is where this project
 starts.
 
----
 
-## 3. The market today
+# Chapter 3 — The market today
 
 Understanding where BroccoliSearch fits requires knowing what already exists.
 These systems are mature, widely deployed, and mostly excellent at what they do.
 
-### The lexical incumbents
+## The lexical incumbents
 
 **Apache Lucene** is the Java library underneath most of this list: inverted
 indexes, BM25 scoring, analyzers. Twenty-plus years old and still the reference
@@ -351,7 +338,7 @@ caching and per-shard parallelism.
 site search. **Algolia** is the hosted version of that idea, optimised hard for
 sub-50ms as-you-type search.
 
-### The vector-native wave
+## The vector-native wave
 
 Since embeddings became cheap, a category of database appeared whose primary
 index is a vector index: **Pinecone** (hosted), **Weaviate**, **Qdrant**,
@@ -364,14 +351,14 @@ algorithms themselves. This project *rents* `hnswlib` rather than reimplementing
 HNSW, which is the correct decision: that code is excellent and the algorithm is
 not the novel part here.
 
-### The databases that grew vector support
+## The databases that grew vector support
 
 **pgvector** adds vector columns and ANN indexes to PostgreSQL. **SQLite** has
 extensions doing the same. Their advantage is enormous and often decisive: your
 data is already there, and you get transactions, joins and a real query planner
 for the structured part of the problem.
 
-### The specialists and the glue
+## The specialists and the glue
 
 **Vespa** (Yahoo) is the closest large system to what this book argues for: it
 runs lexical, vector and structured matching in one engine with a rich ranking
@@ -379,16 +366,15 @@ framework and genuine phased ranking. **LangChain** and **LlamaIndex** are not
 engines at all — they are orchestration libraries that call the above, and they
 are where most RAG pipelines actually express their retrieval strategy.
 
-### What they have in common
+## What they have in common
 
 Almost every system in that list is superb at *executing* a retrieval strategy.
 The strategy itself — which indexes to consult, how many candidates to fetch, how
 to combine the results — is something **you** write down, in code or in a query
 DSL, and it then applies to every query equally.
 
----
 
-## 4. The specific pain: strategy is hardcoded
+# Chapter 4 — The specific pain: strategy is hardcoded
 
 Here is the shape of a typical production retrieval function. It is not a straw
 man; it is close to what most RAG stacks and hybrid search deployments actually
@@ -432,7 +418,7 @@ notice.
 
 Three queries, three different correct strategies, one hardcoded pipeline.
 
-### The idea
+## The idea
 
 Databases solved this problem in the 1970s. You do not tell PostgreSQL to use an
 index scan on `users_email_idx` and then hash-join against `orders`. You write
@@ -444,20 +430,16 @@ using statistics about your actual data.
 > intent and constraints; the engine decides which indexes to touch, how many
 > candidates to retrieve, whether to approximate, and how to rank.
 
-That is what BroccoliSearch is. Everything in Part IV is a consequence of taking
+That is what BroccoliSearch is. Everything in Chapters 17–23 is a consequence of taking
 that sentence seriously — including the parts where it turned out to be harder
 than it sounds.
 
----
----
 
-# Part II — Foundations
+# Chapter 5 — From text to terms: analysis
 
-*This part defines every term and every formula used later. If you already know
-information retrieval, skim to Chapter 13; if you know databases too, skip to
-Part III.*
-
-## 5. From text to terms: analysis
+*Chapters 5 to 13 define every term and every formula used later. If you already
+know information retrieval, skim to Chapter 13; if you know databases too, skip
+to Chapter 14.*
 
 Computers match byte strings; humans do not. Before a document can be indexed its
 text is put through an **analyzer**, a pipeline that turns prose into a list of
@@ -470,6 +452,13 @@ flowchart TB
     C --> D["Remove stopwords → running, dogs"]
     D --> E["Stem → run, dog"]
     E --> F["Terms stored in the index: run, dog"]
+
+    classDef inp  fill:#eef2f6,stroke:#7c8b99,stroke-width:1.5px,color:#1f2933
+    classDef step fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#12345c
+    classDef out  fill:#2f6f4f,stroke:#1d4a34,stroke-width:1.5px,color:#ffffff
+    class A inp
+    class B,C,D,E step
+    class F out
 ```
 
 <p class="caption"><strong>Figure 5.1</strong> — The analysis pipeline. The same
@@ -495,9 +484,8 @@ simplification.
 > of the most common serious bugs in search systems, and Chapter 27 describes how
 > it nearly slipped into this codebase's own test suite.
 
----
 
-## 6. The inverted index
+# Chapter 6 — The inverted index
 
 Once you have terms, you need to find documents by term without reading every
 document. The **inverted index** is the data structure that makes this possible,
@@ -524,6 +512,13 @@ flowchart TB
         t4["soup → [2]"]
         t5["carrot → [3]"]
     end
+
+    classDef dead fill:#eef2f6,stroke:#7c8b99,stroke-width:1.5px,color:#5b6470
+    classDef lex  fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#12345c
+    class d1,d2,d3 dead
+    class t1,t2,t3,t4,t5 lex
+    style Forward fill:#fafbfc,stroke:#c3cbd3,color:#5b6470
+    style Inverted fill:#f4f9ff,stroke:#2563eb,color:#12345c
 ```
 
 <p class="caption"><strong>Figure 6.1</strong> — Inverting the index. Answering
@@ -554,9 +549,8 @@ single most important fact for the cost model in Chapter 19 — the cost of a
 keyword query is not constant, it is `Σ df(t)`, and it varies by four orders of
 magnitude between queries against the same index.
 
----
 
-## 7. BM25, derived and explained
+# Chapter 7 — BM25, derived and explained
 
 Finding candidate documents is not enough; they must be ranked. **BM25** ("Best
 Match 25") is the scoring function that has been the strong baseline for thirty
@@ -572,7 +566,7 @@ $$
 
 It is assembled from three intuitions.
 
-### Intuition 1: rare words matter more — IDF
+## Intuition 1: rare words matter more — IDF
 
 If a document matches "the", that tells you nothing. If it matches "OD0147", that
 tells you almost everything. **Inverse document frequency** turns rarity into
@@ -588,7 +582,7 @@ the expression finite at the extremes, and the outer `1 +` guarantees the result
 is never negative — without it, a term appearing in more than half the corpus
 would score below zero and *subtract* from relevance.
 
-### Intuition 2: more occurrences matter, but with diminishing returns
+## Intuition 2: more occurrences matter, but with diminishing returns
 
 A document mentioning "broccoli" ten times is more about broccoli than one
 mentioning it once. A document mentioning it a thousand times is not a hundred
@@ -603,7 +597,7 @@ As `tf` grows this approaches `k₁ + 1` and stops. The parameter **`k₁`
 (default 1.2)** sets how quickly saturation kicks in. `k₁ = 0` would ignore
 frequency entirely; large `k₁` approaches raw counting.
 
-### Intuition 3: long documents cheat
+## Intuition 3: long documents cheat
 
 A 10,000-word document contains many terms by accident. Dividing by document
 length would over-correct, so BM25 interpolates using **`b` (default 0.75)**:
@@ -616,7 +610,7 @@ where `|d|` is the document's length in terms and `avgdl` is the corpus average.
 `b = 0` disables length normalisation; `b = 1` applies it fully; 0.75 is the
 long-standing empirical default.
 
-### In this codebase
+## In this codebase
 
 The implementation is a direct transcription, and the constants are the standard
 defaults:
@@ -636,9 +630,8 @@ corpus-dependent*. A score of 14.2 means nothing on its own and cannot be
 compared to a cosine similarity of 0.83. That incomparability is exactly why
 fusion (Chapter 11) has to work on *ranks* rather than scores.
 
----
 
-## 8. Embeddings and vector search
+# Chapter 8 — Embeddings and vector search
 
 An **embedding** is a function mapping a piece of text to a fixed-length list of
 floating-point numbers — a **vector** — such that texts with similar meaning map
@@ -654,7 +647,7 @@ The **dimension** is how many numbers describe each text. Nobody can say what an
 individual dimension means — the model chose them — but geometry in that space
 corresponds to meaning, which is all we need.
 
-### Measuring nearness
+## Measuring nearness
 
 **Cosine similarity** — the angle between two vectors, ignoring their lengths.
 This is the default here and the usual choice for text, because document length
@@ -672,7 +665,7 @@ counts. **Euclidean (L2) distance** — straight-line distance. On
 length-normalised vectors these produce identical rankings, which is why this
 library normalises once at build time and then uses a plain matrix multiply.
 
-### Exact search, and why it doesn't scale
+## Exact search, and why it doesn't scale
 
 Finding the nearest vectors exactly means computing similarity against every
 document:
@@ -693,15 +686,14 @@ miss a neighbour) and it is **linear in the number of vectors you scan**. Shrink
 the set of vectors and exact search becomes viable again — which is exactly what
 a filter does, and Chapter 23 exploits it.
 
----
 
-## 9. Approximate nearest neighbours and HNSW
+# Chapter 9 — Approximate nearest neighbours and HNSW
 
 To search a hundred million vectors quickly, you must give something up.
 **Approximate nearest neighbour (ANN)** search does: it finds *most* of the true
 nearest neighbours, much faster, and lets you choose the trade-off.
 
-### HNSW
+## HNSW
 
 **Hierarchical Navigable Small World** graphs are the dominant ANN algorithm and
 what `hnswlib` implements. The idea is a navigable graph with express lanes.
@@ -719,6 +711,16 @@ flowchart TB
     end
     L2 -->|descend| L1
     L1 -->|descend| L0
+
+    classDef top fill:#7c3aed,stroke:#5b21b6,stroke-width:1.5px,color:#ffffff
+    classDef mid fill:#d8ccfa,stroke:#7c3aed,stroke-width:1.5px,color:#3b1f6e
+    classDef bot fill:#ece7fb,stroke:#8b6ee0,stroke-width:1.5px,color:#3b1f6e
+    class a2,b2 top
+    class a1,c1,b1,e1 mid
+    class a0,c0,d0,b0,e0,f0 bot
+    style L2 fill:#faf8ff,stroke:#7c3aed,color:#3b1f6e
+    style L1 fill:#fbfaff,stroke:#9b7ce6,color:#3b1f6e
+    style L0 fill:#fdfcff,stroke:#c3b3f0,color:#3b1f6e
 ```
 
 <p class="caption"><strong>Figure 9.1</strong> — HNSW as a graph with express
@@ -731,7 +733,7 @@ until it cannot improve, drops a layer, and repeats. The upper layers cross the
 space in a few hops; the bottom layer does the fine-grained work. Search cost is
 roughly **logarithmic** in the number of vectors rather than linear.
 
-### The two parameters you must know
+## The two parameters you must know
 
 **`M`** — how many neighbours each node links to. Set at build time. Higher `M`
 means a better-connected graph, better recall, more memory.
@@ -743,7 +745,7 @@ more and finds more.
 
 This library ladders `ef` through `(16, 32, 64, 128, 256)`.
 
-### The recall curve
+## The recall curve
 
 Here **recall** means *operator fidelity*: of the true `k` nearest neighbours,
 what fraction did the approximate search return? It is not a fixed property of the
@@ -756,7 +758,7 @@ index — it is a **curve** traced by `ef`:
 | 256 | ~0.999 | ~5× |
 
 Every ANN system asks you to pick a point on this curve, usually once, in a config
-file. **This curve is the reason the optimizer in Part IV can exist:** it is a
+file. **This curve is the reason the optimizer in Chapter 19 can exist:** it is a
 tunable knob with a measurable cost and a measurable benefit, which is precisely
 the input a cost model needs. This library *measures* the curve on your machine
 and your data at calibration time, then picks the smallest `ef` that meets the
@@ -768,9 +770,8 @@ recall you asked for, per query.
 > scan has recall 1.0 while missing every document that only keyword search could
 > find.
 
----
 
-## 10. Structured indexes, bitmaps and selectivity
+# Chapter 10 — Structured indexes, bitmaps and selectivity
 
 Search queries usually carry constraints that have nothing to do with text:
 `status = "active"`, `price < 10`, `city = "BLR"`, `created_at > 30 days ago`.
@@ -793,9 +794,9 @@ and is marked as such in the source.
 Numeric ranges use a **sorted column** — values kept in order so `price < 10`
 becomes a binary search plus a slice, `O(log N + m)` instead of `O(N)`.
 
-### Selectivity and cardinality — the vocabulary of cost
+## Selectivity and cardinality — the vocabulary of cost
 
-These two words come from databases and are used constantly in Part IV.
+These two words come from databases and are used constantly from Chapter 17 onwards.
 
 **Cardinality** — the *number of rows* an operation produces. `status = "active"`
 might have cardinality 812.
@@ -809,9 +810,8 @@ plainly: **it runs the filter first and therefore knows the true cardinality
 rather than estimating it** (Chapter 18). Bitmap intersection is cheap enough that
 executing the filter costs less than the error of guessing its result would.
 
----
 
-## 11. Combining rankings: fusion and RRF
+# Chapter 11 — Combining rankings: fusion and RRF
 
 If lexical and vector search each return 100 documents, how do you produce one
 ranking? You cannot average the scores: BM25 returns unbounded values like 14.2
@@ -854,9 +854,8 @@ BEIR SciFact dataset, fusion costs about **5× the work** of a single-index plan
 (Chapter 36). Whether that is worth paying is a per-query question, and answering
 it automatically is what this project is for.
 
----
 
-## 12. Measuring quality: recall, precision, nDCG, MRR
+# Chapter 12 — Measuring quality: recall, precision, nDCG, MRR
 
 You cannot optimize what you cannot measure, and search quality is measured
 against **judgments** — queries paired with the documents a human marked
@@ -919,9 +918,8 @@ def ndcg_at_k(retrieved, relevance, k):
 > the second while believing you are optimizing the first is a mistake this
 > project made and had to fix.
 
----
 
-## 13. What databases have that search engines don't
+# Chapter 13 — What databases have that search engines don't
 
 The last piece of background is the one this project borrows wholesale.
 
@@ -932,7 +930,7 @@ SELECT * FROM users u JOIN orders o ON u.id = o.user_id
 WHERE u.country = 'IN' AND o.total > 100;
 ```
 
-The database then performs four steps that map exactly onto Part IV.
+The database then performs four steps that map exactly onto Chapters 17–23.
 
 **1. Enumerate plans.** Index scan or sequential scan? Which table first? Hash
 join, merge join, or nested loop? There may be thousands of candidate plans.
@@ -965,11 +963,8 @@ Search engines have **execution** engines of extraordinary quality. What they
 mostly do not have is the **planning** layer above it — the part that looks at
 this particular query, consults statistics, and decides.
 
----
----
-# Part III — The Gap
 
-## 14. What each system decides for you
+# Chapter 14 — What each system decides for you
 
 With the vocabulary in place, the gap can be stated precisely. For every search
 system, ask: **who decides which indexes to consult for this particular query?**
@@ -998,9 +993,8 @@ multi-phase ranking, cheap first phases and expensive later ones, in one engine.
 That is real planning machinery. It is still a *profile you author* rather than a
 per-query decision derived from measured statistics.
 
----
 
-## 15. The gap, stated precisely
+# Chapter 15 — The gap, stated precisely
 
 > **There is no cost model that spans heterogeneous index types.**
 
@@ -1029,9 +1023,8 @@ above, recall is an *emergent property* of the strategy you configured. You cann
 ask for "0.99, whatever it takes" on a legal search and "0.7, quickly" on an
 autocomplete against the same index.
 
----
 
-## 16. Why nobody has closed it
+# Chapter 16 — Why nobody has closed it
 
 The gap is not obvious-and-unclaimed; it is genuinely difficult, in four ways that
 this project ran into directly.
@@ -1056,14 +1049,10 @@ judgments; Chapter 22 is about doing better when you have them.
 collected interpreted language cannot be timed accurately. When your cost model's
 error is 17% and two plans differ by 0.1%, choosing the cheaper is choosing noise.
 This bit the project hard enough to need a dedicated mechanism (Chapter 22) and it
-is one reason for the Rust core (Part V).
+is one reason for the Rust core (Chapters 24–27).
 
----
----
 
-# Part IV — What BroccoliSearch Does
-
-## 17. The thesis and the architecture
+# Chapter 17 — The thesis and the architecture
 
 > **You express intent and constraints. The engine chooses the strategy, per
 > query, from cost and quality models calibrated on your machine and your data.**
@@ -1096,6 +1085,24 @@ flowchart TB
 
     CAL["Calibration<br/>measures THIS machine"] -.->|constants| C
     ST["StatisticsStore<br/>query history"] -.->|training signal| P
+
+    classDef inp  fill:#eef2f6,stroke:#7c8b99,stroke-width:1.5px,color:#1f2933
+    classDef core fill:#2f6f4f,stroke:#1d4a34,stroke-width:2px,color:#ffffff
+    classDef opt  fill:#d6ece0,stroke:#2f6f4f,stroke-width:1.5px,color:#12241c
+    classDef lex  fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#12345c
+    classDef vec  fill:#ece7fb,stroke:#7c3aed,stroke-width:1.5px,color:#3b1f6e
+    classDef str  fill:#fef1cf,stroke:#d1902a,stroke-width:1.5px,color:#5b4210
+    classDef aux  fill:#fff9e8,stroke:#d9a441,stroke-width:1.3px,color:#4b3a10
+    class U inp
+    class E,X,R opt
+    class O core
+    class F,N,C,P opt
+    class L lex
+    class V vec
+    class S str
+    class CAL,ST aux
+    class H core
+    style OPT fill:#f4faf7,stroke:#2f6f4f,color:#12241c
 ```
 
 <p class="caption"><strong>Figure 17.1</strong> — System architecture. Everything
@@ -1117,9 +1124,8 @@ The components, in one line each:
 | `eval.py` | Judged-query harness, IR metrics |
 | `broccoli-core/` | Optional Rust extension: native inverted index + BM25 |
 
----
 
-## 18. The life of a query
+# Chapter 18 — The life of a query
 
 ```mermaid
 sequenceDiagram
@@ -1168,7 +1174,7 @@ knowing the true domain size. The source comments this explicitly:
 # selectivity, which is the single most valuable input to the cost model.
 ```
 
-### The plans it enumerates
+## The plans it enumerates
 
 The plan space is deliberately small — three shapes plus a degenerate case:
 
@@ -1184,9 +1190,8 @@ Databases must enumerate join orders, which grow factorially; here the axes are
 few and the win comes from *pricing* them correctly rather than from searching a
 large space.
 
----
 
-## 19. The cost model
+# Chapter 19 — The cost model
 
 Each plan is priced as a **pair**, and this is the central design decision of the
 whole system:
@@ -1199,7 +1204,7 @@ Not a single scalar. A plan is not simply "cheaper" or "more expensive" — it i
 cheaper *and* less complete, and the policy needs both numbers to honour a recall
 target.
 
-### Latency
+## Latency
 
 Reading `Optimizer.estimate_plan` directly, total predicted latency is:
 
@@ -1222,7 +1227,7 @@ as candidates to rank (which penalised the very push-down the system exists to
 exploit), and marshalling was once priced as `O(k)` rather than
 `O(hits actually returned)`.
 
-### Per-index cost
+## Per-index cost
 
 Each index prices its own work, in units natural to it.
 
@@ -1249,7 +1254,7 @@ whichever is cheaper, with the recall each implies — exact scan reports recall
 1.0 because an exhaustive scan cannot miss a neighbour, while the ANN path reports
 the recall measured for that `ef` on this corpus.
 
-### Recall
+## Recall
 
 For a single-index plan, recall is that operator's recall. For multi-index plans
 the system assumes the indexes fail independently:
@@ -1269,7 +1274,7 @@ if n_retrieval_steps == 1 and self.solo_coverage:
     recall *= self.solo_coverage.get(solo_op, 1.0)
 ```
 
-### Work units
+## Work units
 
 Latency in Python is noisy — at these scales it swings ~15% with run *order*
 alone, because of cache temperature. So the evaluation harness reports **work
@@ -1281,9 +1286,8 @@ CPU throttling. When this book says one strategy does "3.8× less work", that is
 count of documents touched, not a stopwatch reading. This is the trustworthy
 comparison metric; wall-clock is reported alongside as indicative.
 
----
 
-## 20. Calibration: measuring your machine
+# Chapter 20 — Calibration: measuring your machine
 
 A cost model built on hardcoded constants is confidently wrong. The ratio between
 a posting-list scan and a vector matmul depends on your CPU, your cache sizes,
@@ -1302,6 +1306,18 @@ flowchart LR
     D --> H
     E --> H
     F --> H
+
+    classDef entry fill:#2f6f4f,stroke:#1d4a34,stroke-width:2px,color:#ffffff
+    classDef lex   fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#12345c
+    classDef vec   fill:#ece7fb,stroke:#7c3aed,stroke-width:1.5px,color:#3b1f6e
+    classDef str   fill:#fef1cf,stroke:#d1902a,stroke-width:1.5px,color:#5b4210
+    classDef opt   fill:#d6ece0,stroke:#2f6f4f,stroke-width:1.5px,color:#12241c
+    class A entry
+    class B lex
+    class C vec
+    class D str
+    class E,F,G opt
+    class H entry
 ```
 
 <p class="caption"><strong>Figure 20.1</strong> — Calibration. Every constant the
@@ -1331,21 +1347,20 @@ including one where the probe term matched too few documents for the curve to
 rise, so the fit flipped between "all fixed cost" and "all per-hit cost" from run
 to run.
 
----
 
-## 21. Fidelity is not relevance
+# Chapter 21 — Fidelity is not relevance
 
 This chapter describes the most important bug this project found, because the
 system was **optimizing the wrong quantity** and every measurement looked fine.
 
-### The symptom
+## The symptom
 
 On BEIR SciFact the optimizer scored **0.647 nDCG** while the fixed `hybrid_rrf`
 strategy scored **0.693**. Worse, the `recall` parameter did nothing: every target
 from 0.3 to 0.99 returned the same vector plan. A dial that does not turn is
 either broken or decoration.
 
-### The cause
+## The cause
 
 The cost model's `recall` meant **operator fidelity** — Chapter 9's meaning. An
 exact vector scan honestly reports recall = 1.0, because it truly cannot miss a
@@ -1357,7 +1372,7 @@ recall target.
 The optimizer was answering "did each operator compute its own function
 faithfully?" while the user was asking "will I get the relevant documents?"
 
-### The fix, without needing judgments
+## The fix, without needing judgments
 
 The obvious repair — measure relevance — requires human judgments, which most
 users do not have. The insight is that **the indexes' own disagreement is the
@@ -1377,6 +1392,17 @@ flowchart TB
     E --> G["solo_coverage['vector']"]
     F --> H["Single-index plans are now<br/>priced as INCOMPLETE"]
     G --> H
+
+    classDef inp fill:#eef2f6,stroke:#7c8b99,stroke-width:1.5px,color:#1f2933
+    classDef opt fill:#d6ece0,stroke:#2f6f4f,stroke-width:1.5px,color:#12241c
+    classDef lex fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#12345c
+    classDef vec fill:#ece7fb,stroke:#7c3aed,stroke-width:1.5px,color:#3b1f6e
+    classDef out fill:#2f6f4f,stroke:#1d4a34,stroke-width:2px,color:#ffffff
+    class A inp
+    class B,C opt
+    class D,F lex
+    class E,G vec
+    class H out
 ```
 
 <p class="caption"><strong>Figure 21.1</strong> — Measuring <code>solo_coverage</code>
@@ -1388,7 +1414,7 @@ meaning a single index, however perfectly it executes, recovers only about
 two-thirds of what fusing would have found. Multiplying a single-index plan's
 recall by that factor makes fusion reachable.
 
-### The result: recall becomes a real dial
+## The result: recall becomes a real dial
 
 | `recall=` | nDCG@10 | work | plan mix |
 |---|---|---|---|
@@ -1411,9 +1437,8 @@ work. On a homogeneous workload there is nothing to route.
 > for a single index and completely uncorrelated across indexes, which is the
 > hardest kind of error to see.
 
----
 
-## 22. Policies: rules, tie-breaks, and learning
+# Chapter 22 — Policies: rules, tie-breaks, and learning
 
 The `Policy` is the swappable component that turns priced plans into a decision.
 Everything above it — featurization, enumeration, cost estimation — is unchanged
@@ -1428,14 +1453,14 @@ class Policy(ABC):
         """Feedback hook. The rule-based policy ignores it; a learned one won't."""
 ```
 
-### `RuleBasedPolicy` — the default
+## `RuleBasedPolicy` — the default
 
 > Choose the **cheapest plan whose estimated recall meets the target**.
 
 No judgments required, so it works on day one. But an early version had a subtle
 and expensive flaw.
 
-### The tie-break: never decide on a difference you cannot measure
+## The tie-break: never decide on a difference you cannot measure
 
 On a workload of short identifier-style queries, the policy priced the vector plan
 at **850 work units** and the fusion plan at **851**. It took the 0.1% saving. The
@@ -1459,7 +1484,7 @@ the *marginal* value of each retrieval source instead of banding the total — a
 is listed as an open problem. It did not disturb anything else: SciFact remains at
 0.693 nDCG, because there fusion costs 5× more and never enters the band.
 
-### `LearnedPolicy` — using judgments when you have them
+## `LearnedPolicy` — using judgments when you have them
 
 The rule-based policy can measure that its indexes *disagree*, but not whether the
 disagreement *matters*. Given judged queries, you can do better.
@@ -1498,9 +1523,8 @@ Results are in Chapter 36. On SciFact the learned policy **dominates the vector
 baseline outright** — better nDCG for less work — and reaches 97.7% of fusion's
 quality for **5.5× less work**.
 
----
 
-## 23. Filter push-down
+# Chapter 23 — Filter push-down
 
 Push-down is the mechanism the design leans on hardest, and it does something no
 fixed strategy can: it changes *which algorithm is correct*.
@@ -1528,6 +1552,21 @@ flowchart TB
     AN --> R
     D --> L["Lexical scan iterates<br/>min(posting list, domain)"]
     L --> R
+
+    classDef inp  fill:#eef2f6,stroke:#7c8b99,stroke-width:1.5px,color:#1f2933
+    classDef str  fill:#fef1cf,stroke:#d1902a,stroke-width:1.5px,color:#5b4210
+    classDef dec  fill:#ffe1cf,stroke:#e0672a,stroke-width:2px,color:#5c2a0c
+    classDef win  fill:#7c3aed,stroke:#5b21b6,stroke-width:2px,color:#ffffff
+    classDef vec  fill:#ece7fb,stroke:#7c3aed,stroke-width:1.5px,color:#3b1f6e
+    classDef lex  fill:#dbeafe,stroke:#2563eb,stroke-width:1.5px,color:#12345c
+    classDef out  fill:#2f6f4f,stroke:#1d4a34,stroke-width:2px,color:#ffffff
+    class Q inp
+    class F,D str
+    class DEC dec
+    class EX win
+    class AN vec
+    class L lex
+    class R out
 ```
 
 <p class="caption"><strong>Figure 23.1</strong> — Filter push-down. A selective
@@ -1558,18 +1597,15 @@ optimization for free, where in a typical system they would not.
 > neither BEIR dataset ships usable structured fields. It is listed as an open
 > problem in Chapter 39.
 
----
----
-# Part V — The Native Core
 
-## 24. Why Rust, what PyO3 is
+# Chapter 24 — Why Rust, what PyO3 is
 
 Python is a wonderful language for expressing an optimizer and a terrible one for
 running a tight loop several million times per second. The BM25 scan does exactly
 that: for every posting in every query term's list, look up a document length,
 compute a float expression, and update a dictionary.
 
-### The vocabulary, defined
+## The vocabulary, defined
 
 **Native code** — machine instructions the CPU runs directly, compiled ahead of
 time, with no interpreter in the loop.
@@ -1627,9 +1663,8 @@ code. It also has the ecosystem this project wants to rent from later: Tantivy
 (a Lucene-class full-text engine), `usearch` (ANN), and `roaring` (compressed
 bitmaps) are all Rust-native.
 
----
 
-## 25. What was ported, and what deliberately was not
+# Chapter 25 — What was ported, and what deliberately was not
 
 **Only the lexical scan was ported. That is a result, not an omission.**
 
@@ -1655,6 +1690,15 @@ flowchart TB
         F["BM25 posting-list scan — THE hot loop"]
         E ~~~ F
     end
+
+    classDef py   fill:#e2f0fb,stroke:#2b7cb8,stroke-width:1.5px,color:#123a56
+    classDef rust fill:#ffe1cf,stroke:#e0672a,stroke-width:1.5px,color:#5c2a0c
+    classDef hot  fill:#e0672a,stroke:#a8420f,stroke-width:2px,color:#ffffff
+    class A,B,C,D py
+    class E rust
+    class F hot
+    style PY fill:#f5fafd,stroke:#2b7cb8,color:#123a56
+    style RS fill:#fff8f4,stroke:#e0672a,color:#5c2a0c
 ```
 
 <p class="caption"><strong>Figure 25.1</strong> — What crosses into Rust. Only the
@@ -1676,9 +1720,8 @@ The whole port is **optional**. Without the extension the pure-Python path runs
 and every test passes; `BROCCOLI_NO_RUST=1` forces it, which is how the suite runs
 both backends.
 
----
 
-## 26. The bug the port caused
+# Chapter 26 — The bug the port caused
 
 The first working version made filtered keyword queries **80× more expensive than
 the cost model predicted** — `filtered_kw` error jumped from 23.7% to 68.9%.
@@ -1723,9 +1766,8 @@ The residual is honest and unresolved: `filtered_kw` is still the worst row at
 33.0%, because the boundary crossing remains real work the model cannot see. It is
 an open problem in Chapter 39.
 
----
 
-## 27. The bit-identical guarantee
+# Chapter 27 — The bit-identical guarantee
 
 Swapping an implementation is only safe if behaviour does not change, and that is
 **asserted rather than assumed**.
@@ -1753,12 +1795,8 @@ that had stemmed the word to `"garden"`. Both backends returned nothing, and
 agreed perfectly about it. The test now guards against empty results, which is why
 the vacuous pass cannot recur.
 
----
----
 
-# Part VI — Using the Library
-
-## 28. Installation
+# Chapter 28 — Installation
 
 ```bash
 git clone <your-repo> && cd broccolisearch
@@ -1774,7 +1812,7 @@ Requires **Python ≥ 3.9** and **NumPy**. Everything else is optional:
 | `sentence-transformers` | generating embeddings in the examples | supply your own vectors |
 | `pytest` | running the test suite | — |
 
-### Optional: the Rust core
+## Optional: the Rust core
 
 ```bash
 cd broccoli-core
@@ -1788,9 +1826,8 @@ It is detected automatically at import. To force the Python path:
 BROCCOLI_NO_RUST=1 python3 -m pytest tests/ -q
 ```
 
----
 
-## 29. Hello, search
+# Chapter 29 — Hello, search
 
 The smallest useful program. Note there is **no path**, which gives an in-memory
 index — ideal for experiments and tests.
@@ -1827,7 +1864,7 @@ for hit in idx.search(text="organic seeds", k=5):
 `Text` is what you search; `Keyword` is what you filter on. Using `Text` for a
 status field would stem and tokenize it, which is not what you want.
 
-### Adding a semantic axis
+## Adding a semantic axis
 
 Supply your own vectors — the library does not bundle a model:
 
@@ -1851,9 +1888,8 @@ hits = idx.search(text="organic seeds",
                   semantic=embed("healthy garden vegetables"), k=10)
 ```
 
----
 
-## 30. Filters
+# Chapter 30 — Filters
 
 Filters are pushed down (Chapter 23), so they make queries **faster**, not slower.
 
@@ -1876,9 +1912,8 @@ answer, and the optimizer emits a `filter_only` plan:
 cheap = idx.search(where={"price": lt(5), "status": "active"}, k=20)
 ```
 
----
 
-## 31. Reading the plan with `explain`
+# Chapter 31 — Reading the plan with `explain`
 
 This is the feature that makes the whole thesis inspectable.
 
@@ -1921,7 +1956,7 @@ Every field, individually:
 `examined` is the **work unit** count from Chapter 19 — the number of postings
 touched or vectors compared. It is the honest measure of what a query cost.
 
-### Watching the optimizer change its mind
+## Watching the optimizer change its mind
 
 `recall` is a target, not a strategy. Raising it can buy a more expensive plan:
 
@@ -1945,7 +1980,7 @@ recall=0.99  -> hybrid_rrf   est 0.1230ms r~0.990
 One parameter changed, and the engine bought a different, more expensive plan to
 meet the promise. That is the entire thesis in three lines.
 
-### Forcing a strategy, for benchmarking only
+## Forcing a strategy, for benchmarking only
 
 `pin` bypasses the optimizer. It exists so the evaluation harness can compare
 against fixed strategies — it is not how you should call the library in
@@ -1955,9 +1990,8 @@ production, since it discards the entire point.
 idx.search(text="seeds", semantic=vec, pin="hybrid_rrf")   # or "lexical", "vector"
 ```
 
----
 
-## 32. Evaluating with judgments
+# Chapter 32 — Evaluating with judgments
 
 The harness answers the question the project exists to answer: **does the
 optimizer beat every fixed strategy?**
@@ -2004,9 +2038,8 @@ differ, which is the whole argument of Chapter 36.
 The metrics are the ones from Chapter 12, and `work` is the deterministic unit
 from Chapter 19.
 
----
 
-## 33. The learned policy
+# Chapter 33 — The learned policy
 
 With judgments in hand, you can install a policy that learns which plan shape
 actually wins for each kind of query.
@@ -2031,9 +2064,8 @@ the gap survives a tolerance and two standard errors of the paired difference.
 You need judged queries for this, on the order of a few hundred at minimum. The
 rule-based default requires none.
 
----
 
-## 34. Persistence, updates and deletes
+# Chapter 34 — Persistence, updates and deletes
 
 Passing a path makes the index durable:
 
@@ -2065,15 +2097,12 @@ as such in the source.
 > GIL, and it does not shard. Chapter 40 covers when that is fine and when it is
 > disqualifying.
 
----
----
-# Part VII — Results and Honest Limits
 
-*Every number in this part is produced by a script in the repository, named at the
-start of each chapter. Each is quoted with its limitations, because a measured
-number without its limits is marketing.*
+# Chapter 35 — The synthetic workload
 
-## 35. The synthetic workload
+*Every number in Chapters 35 to 40 is produced by a script in the repository,
+named at the start of each chapter. Each is quoted with its limitations, because
+a measured number without its limits is marketing.*
 
 **Reproduce:** `PYTHONPATH=. python3 examples/demo.py` — 50,000 documents, 60
 queries mixing keyword, semantic and filtered shapes.
@@ -2108,7 +2137,7 @@ them is the honest price of not having relevance labels:
 That gap is exactly why `Policy` is a swappable interface rather than a fixed
 rule.
 
-### Caveats, stated plainly
+## Caveats, stated plainly
 
 - **The win is 1.17×, which is real but not dramatic.** Filter push-down happens
   during planning and therefore benefits *every* strategy including the pinned
@@ -2120,9 +2149,8 @@ rule.
   not real-world quality. That is what the next chapter is for.
 - **The learned row needs judgments.** No judgments, no routing win.
 
----
 
-## 36. Real judged data: BEIR
+# Chapter 36 — Real judged data: BEIR
 
 **Reproduce:**
 
@@ -2137,7 +2165,7 @@ PYTHONPATH=. python3 examples/beir_eval.py --data ./scifact
 relevance judgments. Using it means the numbers are comparable to published
 research rather than to ourselves.
 
-### First: are the engines even correct?
+## First: are the engines even correct?
 
 This is the check that catches analyzer and scoring bugs, and it is the first
 thing to run in any IR project:
@@ -2151,7 +2179,7 @@ Landing on the published baseline means the analyzer, the inverted index and the
 BM25 implementation are right. Had this been off by 0.05, everything downstream
 would have been measuring a bug.
 
-### Then: the defect real data exposed
+## Then: the defect real data exposed
 
 Real data is what revealed the objective-function bug of Chapter 21 — the
 optimizer scoring 0.647 against fusion's 0.693 and never choosing fusion at any
@@ -2159,7 +2187,7 @@ recall target. After the `solo_coverage` fix, `recall` became a working dial and
 the optimizer matches `hybrid_rrf` exactly at the default target (0.691 SciFact,
 0.313 NFCorpus).
 
-### The learned policy, trained on half and scored on the held-out half
+## The learned policy, trained on half and scored on the held-out half
 
 | | SciFact nDCG@10 | work | | NFCorpus nDCG@10 | work |
 |---|---|---|---|---|---|
@@ -2173,7 +2201,7 @@ On SciFact the learned policy **dominates the vector baseline outright** — bet
 nDCG (0.675 vs 0.673) for less work (842 vs 850) — and reaches **97.7% of fusion's
 quality for 5.5× less work**.
 
-### What BEIR could not test
+## What BEIR could not test
 
 **The routing win does not reproduce here, and the reason is structural rather
 than a failure.** A per-query routing win requires a workload of *mixed query
@@ -2187,9 +2215,8 @@ The remaining honest limit on the learned policy: it still gives up ~0.016 nDCG 
 full fusion, and it needs judgments. The next real test is MS MARCO, where judged
 queries are ~1,000× more plentiful and the buckets would not be data-starved.
 
----
 
-## 37. How wrong is the cost model?
+# Chapter 37 — How wrong is the cost model?
 
 **Reproduce:** `PYTHONPATH=. python3 examples/cost_model_error.py`
 
@@ -2208,7 +2235,7 @@ whole latency, and best on vector plans (9.3%).
 > A 17% error on the magnitude is fine when the decision only needs the ordering.
 > Do not use these estimates as an SLA predictor.
 
-### The story worth learning from: the measurement was lying
+## The story worth learning from: the measurement was lying
 
 An earlier version of this project advertised ~10–15% median error. **That number
 was not reproducible.** Running the unchanged harness on unchanged code produced
@@ -2231,7 +2258,7 @@ Two modelling errors were fixed alongside: result marshalling is `O(k)` and was
 priced as a constant, and it is really `O(hits returned)` rather than `O(k)`, so a
 `k=200` query against a 50-document term was charged four times over.
 
-### Fixing the cost model was also a speedup
+## Fixing the cost model was also a speedup
 
 A wrong cost model makes wrong plans, so correcting it made the system faster.
 Measured on the 60-query mixed workload, the whole run went from **23.1ms to
@@ -2249,9 +2276,8 @@ Measured on the 60-query mixed workload, the whole run went from **23.1ms to
 Two of those were found *only* because the estimates were wrong in a specific,
 traceable way — the cost model functioning as a bug detector for the executor.
 
----
 
-## 38. What the Rust core changed
+# Chapter 38 — What the Rust core changed
 
 The open question was whether the model's large error on cheap keyword queries was
 a **modelling failure** or an **artefact of timing sub-0.05ms operations in
@@ -2281,13 +2307,12 @@ Python but only 9.8%–29.7% on Rust**. More predictable execution makes the
 `filtered_kw` is the one row that got **worse**, for the FFI marshalling reason in
 Chapter 26. It is reported rather than omitted.
 
----
 
-## 39. Limitations and open problems
+# Chapter 39 — Limitations and open problems
 
 Stated as flatly as possible.
 
-### What is not built
+## What is not built
 
 | | Status |
 |---|---|
@@ -2297,7 +2322,7 @@ Stated as flatly as possible.
 | Renting Tantivy / usearch / roaring | future work, now that the interface survived one real swap |
 | Concurrency beyond the GIL | not addressed |
 
-### What is built but unvalidated
+## What is built but unvalidated
 
 **Filter push-down on real data.** The mechanism the design leans on hardest, and
 neither BEIR corpus ships usable structured fields. It is exercised by the test
@@ -2308,7 +2333,7 @@ optimizer beats the best fixed strategy holds on the synthetic mixed workload, b
 BEIR's homogeneous datasets cannot test it, and a synthetic workload is exactly
 where such a claim is easiest to accidentally construct in one's own favour.
 
-### Known-imperfect mechanisms
+## Known-imperfect mechanisms
 
 **The union-recall independence assumption.** `1 − Π(1 − rᵢ)` assumes indexes fail
 on different documents. Two indexes failing on the *same* documents make it
@@ -2326,7 +2351,7 @@ of each retrieval source.
 **The analyzer is suffix-stripping, not a real Porter stemmer**, and the bitmaps
 are Python sets rather than Roaring bitmaps. Both are marked in the source.
 
-### And the honest framing of the whole result
+## And the honest framing of the whole result
 
 The parts that **retrieve** are correct and measured against published baselines.
 The part that **decides** is the contribution, and it is demonstrated: the
@@ -2335,11 +2360,10 @@ the learned policy finds a better cost/quality point than any fixed strategy on
 both real datasets. The routing win — the most eye-catching claim — is measured on
 synthetic data and remains untested on a real mixed workload.
 
----
 
-## 40. When to use this, and when not to
+# Chapter 40 — When to use this, and when not to
 
-### Use it when
+## Use it when
 
 - You have **more than one kind of query** hitting the same corpus — codes and
   prose, lookups and descriptions. This is the situation the whole design exists
@@ -2354,7 +2378,7 @@ synthetic data and remains untested on a real mixed workload.
 - You are **researching retrieval strategy** and want a harness that compares
   adaptive against fixed strategies on judged queries.
 
-### Do not use it when
+## Do not use it when
 
 - You need a **production distributed search cluster today**. Use Elasticsearch,
   OpenSearch or Vespa. This is a single-process library.
@@ -2367,18 +2391,14 @@ synthetic data and remains untested on a real mixed workload.
 - You want **turnkey**. This expects you to bring embeddings and to call
   `calibrate()`.
 
-### The one-sentence summary
+## The one-sentence summary
 
 > BroccoliSearch is a reference implementation of a research idea — a cost-based
 > query optimizer for heterogeneous search indexes — that is measured honestly
 > enough to show both where the idea works and where it does not yet.
 
----
----
 
-# Appendices
-
-## Appendix A — Glossary
+# Appendix A — Glossary
 
 | Term | Definition |
 |---|---|
@@ -2429,9 +2449,8 @@ synthetic data and remains untested on a real mixed workload.
 | **Tombstone** | A deletion marker, cheaper than physically removing data. |
 | **Work units** | Deterministic cost count: postings examined + vectors compared. |
 
----
 
-## Appendix B — Formula sheet
+# Appendix B — Formula sheet
 
 **BM25**
 
@@ -2490,9 +2509,8 @@ $$
 \text{error} = \frac{|\text{estimated} - \text{actual}|}{\max(\text{actual}, 10^{-6})}
 $$
 
----
 
-## Appendix C — Repository map
+# Appendix C — Repository map
 
 ```
 broccoli/
@@ -2537,9 +2555,8 @@ PYTHONPATH=. python3 examples/demo.py
 PYTHONPATH=. python3 examples/cost_model_error.py
 ```
 
----
 
-## Appendix D — Regenerating this document as a PDF
+# Appendix D — Regenerating this document as a PDF
 
 `BOOK.md` is the source of truth. To produce a PDF with the Mermaid diagrams and
 mathematics rendered:
@@ -2562,16 +2579,15 @@ browser and use File → Print → Save as PDF.
 The Markdown also renders directly on GitHub, which supports both Mermaid and
 `$$` math natively.
 
----
 
-## Appendix E — Further reading
+# Appendix E — Further reading
 
 **Foundational**
 
 - Robertson & Zaragoza, *The Probabilistic Relevance Framework: BM25 and Beyond*
   (2009) — the definitive BM25 treatment.
 - Manning, Raghavan & Schütze, *Introduction to Information Retrieval* (2008) —
-  free online; the standard textbook for Part II.
+  free online; the standard textbook for Chapters 5–13.
 
 **Vector search**
 
@@ -2602,9 +2618,8 @@ The Markdown also renders directly on GitHub, which supports both Mermaid and
 - `Approach.md` — the engineering and evaluation discipline, including the
   measurement failures that shaped Chapter 37.
 
----
 
-## Appendix F — Index
+# Appendix F — Index
 
 *References are to chapters, not pages, so that this index stays correct when the
 book is re-typeset.*
@@ -2664,9 +2679,8 @@ stopwords 5; structured index 10
 
 **W** — Weaviate 3; work units 19, 31, 35
 
----
 
-## Colophon
+# Colophon
 
 This book was produced from a single Markdown file, `BOOK.md`, in the same
 repository as the software it describes. The two are versioned together so that
@@ -2688,7 +2702,7 @@ of step with the text describing it. The cover was drawn as hand-written SVG
 posting-list examples are set in SF Mono, falling back to Menlo and Consolas.
 Mathematics uses MathJax's own typeface.
 
-**Verification.** Every code snippet in Part VI was executed against the library
+**Verification.** Every code snippet in Chapters 28–34 was executed against the library
 before publication, and the outputs shown for `explain`, the evaluation harness
 and the recall dial are captured from real runs rather than written by hand. Three
 of them were wrong when first drafted, which is the reason for the rule.
@@ -2700,9 +2714,8 @@ python3 build_book.py            # -> BOOK.pdf
 python3 build_book.py --html     # keep the intermediate HTML as well
 ```
 
----
 
-## About the author
+# About the author
 
 **Abhishek Gupta** is a backend engineer. He wrote BroccoliSearch to find out
 whether the idea behind it — that a search engine should plan a query the way a
