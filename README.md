@@ -361,10 +361,19 @@ broccoli-core/           # optional Rust extension (PyO3)
 
 ## Documentation
 
-Start with **[document.md](./document.md)** (master index + glossary).
+New to search? Start with **[BOOK.md](./BOOK.md)** — a self-contained 63-page
+book that assumes no prior knowledge of information retrieval, explains every
+term and formula, surveys the existing market, and then covers this system end to
+end. Build the PDF with `python3 build_book.py`; the mathematics is typeset by
+MathJax and the nine figures are generated from Mermaid source at build time.
+
+<a href="./BOOK.md"><img src="./assets/cover.png" alt="BroccoliSearch — How Search Engines Decide, and Why Ours Decides for You" width="230"></a>
+
+Otherwise start with **[document.md](./document.md)** (master index + glossary).
 
 | Doc | Covers |
 |---|---|
+| [BOOK.md](./BOOK.md) | **The book.** Problem, market, all terminology and maths, the gap, this system's design, PyO3/Rust, usage, and every measured result. Exports to PDF. |
 | [document.md](./document.md) | Master index, thesis, glossary. |
 | [Information.md](./Information.md) | ELK, inverted index/BM25, embeddings, ANN/HNSW, bitmaps, IR metrics. |
 | [PRD.md](./PRD.md) | Requirements, users, use cases, API, success metrics. |

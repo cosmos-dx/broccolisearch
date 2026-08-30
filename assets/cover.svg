@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1600" viewBox="0 0 1200 1600">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0.4" y2="1">
+      <stop offset="0%"   stop-color="#0b2b1e"/>
+      <stop offset="55%"  stop-color="#14472f"/>
+      <stop offset="100%" stop-color="#1e6b45"/>
+    </linearGradient>
+    <linearGradient id="rule" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0%"   stop-color="#7fd6a4" stop-opacity="0"/>
+      <stop offset="18%"  stop-color="#7fd6a4" stop-opacity="1"/>
+      <stop offset="82%"  stop-color="#7fd6a4" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#7fd6a4" stop-opacity="0"/>
+    </linearGradient>
+    <style>
+      .sans   { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
+      .mono   { font-family: "SF Mono", Menlo, Consolas, monospace; }
+      .kicker { font-size: 21px; letter-spacing: 6.5px; fill: #8fe0b3; font-weight: 600; }
+      .title  { font-size: 132px; font-weight: 700; fill: #ffffff; letter-spacing: -2px; }
+      .sub    { font-size: 33px; fill: #d6f2e2; font-weight: 300; }
+      .sub2   { font-size: 26px; fill: #9fd9bb; font-weight: 300; font-style: italic; }
+      .node   { font-size: 21px; fill: #d9f3e6; font-weight: 600; letter-spacing: 1.4px; }
+      .nsub   { font-size: 16px; fill: #7fbd9c; }
+      .plan   { font-size: 23px; fill: #0b2b1e; font-weight: 700; letter-spacing: 1.5px; }
+      .author { font-size: 38px; fill: #ffffff; font-weight: 500; letter-spacing: 1px; }
+      .meta   { font-size: 22px; fill: #8fc9ac; letter-spacing: 1.5px; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="1600" fill="url(#bg)"/>
+
+  <g opacity="0.07" fill="none" stroke="#ffffff" stroke-width="2">
+    <path d="M880 90 h240 M880 130 h180 M880 170 h240 M880 210 h120 M880 250 h200"/>
+  </g>
+
+  <text class="sans kicker" x="100" y="180">COST-BASED QUERY OPTIMIZATION</text>
+
+  <text class="sans title" x="94" y="330">Broccoli</text>
+  <text class="sans title" x="94" y="452">Search</text>
+
+  <rect x="100" y="500" width="1000" height="3" fill="url(#rule)"/>
+
+  <text class="sans sub" x="100" y="566">How Search Engines Decide &#8212;</text>
+  <text class="sans sub" x="100" y="612">and Why Ours Decides for You</text>
+
+  <text class="sans sub2" x="100" y="676">Lexical, vector and structured retrieval,</text>
+  <text class="sans sub2" x="100" y="714">and the optimizer that chooses between them.</text>
+
+  <g transform="translate(0,60)">
+    <rect x="100" y="800" width="290" height="96" rx="10" fill="#ffffff" fill-opacity="0.09" stroke="#7fd6a4" stroke-opacity="0.55" stroke-width="2"/>
+    <text class="sans node" x="126" y="843">LEXICAL</text>
+    <text class="sans nsub" x="126" y="872">BM25 over posting lists</text>
+
+    <rect x="100" y="928" width="290" height="96" rx="10" fill="#ffffff" fill-opacity="0.09" stroke="#7fd6a4" stroke-opacity="0.55" stroke-width="2"/>
+    <text class="sans node" x="126" y="971">VECTOR</text>
+    <text class="sans nsub" x="126" y="1000">HNSW or exact scan</text>
+
+    <rect x="100" y="1056" width="290" height="96" rx="10" fill="#ffffff" fill-opacity="0.09" stroke="#7fd6a4" stroke-opacity="0.55" stroke-width="2"/>
+    <text class="sans node" x="126" y="1099">STRUCTURED</text>
+    <text class="sans nsub" x="126" y="1128">bitmaps, push-down</text>
+
+    <g fill="none" stroke="#7fd6a4" stroke-opacity="0.65" stroke-width="2.5">
+      <path d="M390 848  C 500 848, 520 976, 618 976"/>
+      <path d="M390 976  H 618"/>
+      <path d="M390 1104 C 500 1104, 520 976, 618 976"/>
+      <path d="M782 976 H 960"/>
+    </g>
+
+    <circle cx="700" cy="976" r="82" fill="#7fd6a4" fill-opacity="0.14" stroke="#7fd6a4" stroke-width="2.5"/>
+    <text class="sans node" x="700" y="963" text-anchor="middle">COST</text>
+    <text class="sans node" x="700" y="992" text-anchor="middle">MODEL</text>
+    <text class="mono nsub" x="700" y="1094" text-anchor="middle">(latency, recall)</text>
+
+    <rect x="960" y="940" width="150" height="72" rx="8" fill="#7fd6a4"/>
+    <text class="sans plan" x="1035" y="984" text-anchor="middle">PLAN</text>
+  </g>
+
+  <rect x="100" y="1382" width="1000" height="2" fill="#7fd6a4" fill-opacity="0.4"/>
+
+  <text class="sans author" x="100" y="1452">Abhishek Gupta</text>
+  <text class="mono meta"   x="100" y="1496">github.com/cosmos-dx</text>
+  <text class="sans meta"   x="1100" y="1496" text-anchor="end">First Edition</text>
+</svg>

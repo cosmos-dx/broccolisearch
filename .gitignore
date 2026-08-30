@@ -9,4 +9,8 @@ dist/
 broccoli-core/target/
 *.so
 
+# Cached embeddings, written next to whichever dataset you point the evals at
 _*.npz
+
+# Intermediate render from build_book.py; BOOK.pdf is the artefact worth keeping
+BOOK.html
